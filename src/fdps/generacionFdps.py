@@ -140,7 +140,6 @@ csv_Generacion_CC1['Generacion_MW'] = csv_Generacion_CC1['Generacion_MW'].fillna
 csv_Generacion_CC2['Generacion_MW'] = csv_Generacion_CC2['Generacion_MW'].fillna(0)
 csv_Generacion_TV['Generacion_MW'] = csv_Generacion_TV['Generacion_MW'].fillna(0)
 csv_Potencia_Perdida['PerdidaCC1_Pct'] = csv_Potencia_Perdida['PerdidaCC1_Pct'].fillna(0)
-csv_Potencia_Perdida['PerdidaCC2_Pct'] = csv_Potencia_Perdida['PerdidaCC2_Pct'].fillna(0)
 
 # Cargar datos de 'Autodescarga_Porcentaje' en variable 'f_autodescarga'
 f_autodescarga = Fitter(csv_Autodescarga_BESS.Autodescarga_Porcentaje)
@@ -151,11 +150,11 @@ f_costoFalla = Fitter(csv_Costo_Falla.Costo_Falla_USD)
 f_costoFalla.fit(n_jobs=1)
 f_costoFalla.summary(10)
 
-f_demanda_primer_semestre = Fitter(csv_Demanda_Primer_Semestre.Autodescarga_Porcentaje)
+f_demanda_primer_semestre = Fitter(csv_Demanda_Primer_Semestre.Demanda_MWh)
 f_demanda_primer_semestre.fit(n_jobs=1)
 f_demanda_primer_semestre.summary(10)
 
-f_demanda_segundo_semestre = Fitter(csv_Demanda_Segundo_Semestre.AutodeDemanda_MWhscarga_Porcentaje)
+f_demanda_segundo_semestre = Fitter(csv_Demanda_Segundo_Semestre.Demanda_MWh)
 f_demanda_segundo_semestre.fit(n_jobs=1)
 f_demanda_segundo_semestre.summary(10)
 
@@ -171,13 +170,9 @@ f_generacion_tv = Fitter(csv_Generacion_TV.Generacion_MW)
 f_generacion_tv.fit(n_jobs=1)
 f_generacion_tv.summary(10)
 
-f_potencia_perdida1 = Fitter(csv_Potencia_Perdida.PerdidaCC1_Pct)
-f_potencia_perdida1.fit(n_jobs=1)
-f_potencia_perdida1.summary(10)
-
-f_potencia_perdida2 = Fitter(csv_Potencia_Perdida.PerdidaCC2_Pct)
-f_potencia_perdida2.fit(n_jobs=1)
-f_potencia_perdida2.summary(10)
+f_potencia_perdida = Fitter(csv_Potencia_Perdida.PerdidaCC1_Pct)
+f_potencia_perdida.fit(n_jobs=1)
+f_potencia_perdida.summary(10)
 
 # Se obtienen las mejores distribuciones:
 best_f_autodescarga = f_autodescarga.get_best(method='sumsquare_error')
@@ -187,8 +182,7 @@ best_f_demanda_segundo_semestre = f_demanda_segundo_semestre.get_best(method='su
 best_f_generacion_cc1 = f_generacion_cc1.get_best(method='sumsquare_error')
 best_f_generacion_cc2 = f_generacion_cc2.get_best(method='sumsquare_error')
 best_f_generacion_tv = f_generacion_tv.get_best(method='sumsquare_error')
-best_f_potencia_perdida1 = f_potencia_perdida1.get_best(method='sumsquare_error')
-best_f_potencia_perdida2 = f_potencia_perdida2.get_best(method='sumsquare_error')
+best_f_potencia_perdida = f_potencia_perdida.get_best(method='sumsquare_error')
 
 """
 Lo que devolverá algo como:
@@ -196,17 +190,33 @@ Lo que devolverá algo como:
   'nc': 4.565938634878238,
   'loc': -0.19822327598148462,
   'scale': 27.044843308438672}}
-"""
 
-print(best_f_autodescarga)
-print(best_f_costoFalla)
-print(best_f_demanda_primer_semestre)
-print(best_f_demanda_segundo_semestre)
-print(best_f_generacion_cc1)
-print(best_f_generacion_cc2)
-print(best_f_generacion_tv)
-print(best_f_potencia_perdida1)
-print(best_f_potencia_perdida2)
+Estos valores serán los utilizados en las funciones estadísticas para finalmente obtenerlas.
+
+--------- AUTODESCARGA ---------
+best_f_autodescarga: {'gennorm': {'beta': 39.87762517430417, 'loc': 0.02008661643245054, 'scale': 0.010103831003727536}}
+
+--------- COSTOFALLA ---------
+best_f_costoFalla: {'pearson3': {'skew': 1.2672861956124433, 'loc': 7955.175469640658, 'scale': 3763.2127890221027}}
+
+--------- DEMANDA 1S ---------
+best_f_demanda_primer_semestre: {'laplace_asymmetric': {'kappa': 0.5078151312975224, 'loc': 2575.569999998423, 'scale': 452.20815824224394}}
+
+--------- DEMANDA 2S ---------
+best_f_demanda_segundo_semestre: {'gumbel_r': {'loc': 3876.0965773518615, 'scale': 653.1078007257158}}
+
+--------- GENERACION CC1 ---------
+best_f_generacion_cc1: {'gennorm': {'beta': 3.0613478036342627, 'loc': 719.3923999911451, 'scale': 127.21163991375852}}
+
+--------- GENERACION CC2 ---------
+best_f_generacion_cc2: {'gennorm': {'beta': 4.9423185984406155, 'loc': 610.589328055618, 'scale': 124.80973709648973}}
+
+--------- GENERACION TV ---------
+best_f_generacion_tv: {'gennorm': {'beta': 5.703506370721026, 'loc': 550.2687715652102, 'scale': 124.52965269900714}}
+
+--------- POTENCIA PERDIDA  ---------
+best_f_potencia_perdida: {'tukeylambda': {'lam': 1.0018233713540219, 'loc': 5.499999999999986, 'scale': 2.5045584283850713}}
+"""
 
 """
 ## 6. Verifcación
@@ -214,28 +224,29 @@ La idea es que mediante la biblioteca de funciones estadística scipy.stats gene
 con los parámetros que había devuelto get_best()
 """
 
-# f_verif_autodescarga = stats.nct.rvs(df, nc, loc, scale, size=4000, random_state=None)
+f_autodescarga = stats.gennorm.rvs(beta=39.87762517430417, loc=0.02008661643245054, scale=0.010103831003727536, size=4000, random_state=None)
+f_costoFalla = stats.pearson3.rvs(skew=1.2672861956124433, loc=7955.175469640658, scale=3763.2127890221027, size=4000, random_state=None)
+f_demanda_primer_semestre = stats.laplace_asymmetric.rvs(kappa=0.5078151312975224, loc=2575.569999998423, scale=452.20815824224394, size=4000, random_state=None)
+f_demanda_segundo_semestre = stats.gumbel_r.rvs(loc=3876.0965773518615, scale=653.1078007257158, size=4000, random_state=None)
+f_generacion_cc1 = stats.gennorm.rvs(beta=3.0613478036342627, loc=719.3923999911451, scale=127.21163991375852, size=4000, random_state=None)
+f_generacion_cc2 = stats.gennorm.rvs(beta=4.9423185984406155, loc=610.589328055618, scale=124.80973709648973, size=4000, random_state=None)
+f_generacion_tv = stats.gennorm.rvs(beta=5.703506370721026, loc=550.2687715652102, scale=124.52965269900714, size=4000, random_state=None)
+f_potencia_perdida = stats.tukeylambda.rvs(lam=1.0018233713540219, loc=5.499999999999986, scale=2.5045584283850713, size=4000, random_state=None)
 
-# # Como mencionamos, el tipo de dato de estas variables creadas es un array de numpy.
-# type(f_verif_autodescarga)
+# Como mencionamos, el tipo de dato de estas variables creadas es un array de numpy.
+type(f_autodescarga)
 
-# # En el parámetro size le indicamos que el tamaño de este array es de ${num_filas}.
-# # De esta manera, pudimos "simular" un set de datos similar a los datos de origen con los cuales inciamos nuestro análisis.
+# En el parámetro size le indicamos que el tamaño de este array es de ${num_filas}.
+# De esta manera, pudimos "simular" un set de datos similar a los datos de origen con los cuales inciamos nuestro análisis.
 
-# f_verif_autodescarga
+f_autodescarga
 
-# # Histograma de datos de verificación
-# plt.title("Histograma Autodescarga")
-# plt.xlabel("Autodescarga Porcentaje (%)")
-# plt.ylabel("Frecuencia")
-# plt.hist(f_verif_autodescarga, bins=300)
-# plt.show()
-
-# # Opcional
-# # De la misma manera, si realizamos un buen análisis, aplicando los datos de verificación a Fitter debería ajustar a la función previamente sugerida:
-# v_autodescarga = Fitter(f_verif_autodescarga, distributions=['uniform', 'rel_breitwigner','skewcauchy','norminvgauss', 'burr12'])
-# v_autodescarga.fit()
-# v_autodescarga.summary(6)
+# Histograma de datos de verificación
+plt.title("Histograma Autodescarga")
+plt.xlabel("Autodescarga Porcentaje (%)")
+plt.ylabel("Frecuencia")
+plt.hist(f_autodescarga, bins=300)
+plt.show()
 
 """
 7. Conclusión

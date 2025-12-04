@@ -11,6 +11,8 @@ import os
 import random
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import pathlib
 
 
 class SimulacionInvierno:
@@ -50,6 +52,12 @@ class SimulacionInvierno:
         self.STM = 0.0
         self.C = 0
         self.STI = 0.0
+        # Métricas de venta
+        self.energia_vendida_bess_total = 0.0
+        self.veces_descargada = 0
+        self.energia_vendida_generacion_total = 0.0
+        # Política rápida: vender toda la generación diaria
+        self.policy_vender_todo = False
 
         # Parámetros climáticos/invernales
         # Probabilidad de ola fría que aumenta demanda
@@ -63,6 +71,8 @@ class SimulacionInvierno:
 
         # Resultados diarios para muestreo
         self.resultados = []
+        # Series temporales diarias (una entrada por día)
+        self.timeseries = []
 
     def _cargar_datos(self):
         """Carga CSVs si existen y prepara vectores de muestreo."""
@@ -142,6 +152,8 @@ class SimulacionInvierno:
 
         # 3. Generación GDCC1
         GDCC1 = self.sample_cc1()
+        # convertir potencia (MW) a energía diaria aproximada (MWh) assuming 24 h
+        GDCC1 = GDCC1 * 24.0
         r = random.random()
         if self.TG == 'ESTANDAR':
             if r <= 0.02:
@@ -156,6 +168,8 @@ class SimulacionInvierno:
 
         # GDCC2
         GDCC2 = self.sample_cc2()
+        # convertir potencia (MW) a energía diaria aproximada (MWh)
+        GDCC2 = GDCC2 * 24.0
 
         # 4. Rama principal: gas o fuel oil
         if gas:
@@ -177,6 +191,8 @@ class SimulacionInvierno:
             # Turbina a vapor solo si H == 1
             if self.H == 1:
                 GDTV = self.sample_tv()
+                # convertir potencia (MW) a energía diaria aproximada (MWh)
+                GDTV = GDTV * 24.0
                 r = random.random()
                 if self.TG == 'ESTANDAR':
                     if r <= 0.06:
@@ -231,11 +247,29 @@ class SimulacionInvierno:
         if random.random() < self.prob_ola_frio:
             DV = DV * (1 + self.factor_demanda_ola_frio)
 
-        if self.GD >= DV:
-            # Exceso
-            self.BENEF += (self.PV * DV)
-            exceso = self.GD - DV
-            self.BESS += exceso
+        # Guardar totales pre-venta para trazabilidad diaria
+        gen_total = float(self.GD)
+        pre_bess = float(self.BESS)
+        sold_gen_today = 0.0
+        sold_bess_today = 0.0
+        sold_all_flag = False
+
+        # Política rápida: vender toda la generación diaria (ingreso = PV * GD)
+        if self.policy_vender_todo:
+            sold_gen_today = gen_total
+            self.BENEF += (self.PV * sold_gen_today)
+            sold_all_flag = True
+
+        if gen_total >= DV:
+            # Exceso: se vende la demanda inmediatamente desde la generación
+            if sold_all_flag:
+                # ya se vendió toda la generación (política rápida): no almacenar el exceso
+                exceso = gen_total - DV
+            else:
+                sold_gen_today = DV
+                self.BENEF += (self.PV * sold_gen_today)
+                exceso = gen_total - DV
+                self.BESS += exceso
 
             if self.BESS > self.CBESS:
                 # saturado
@@ -247,27 +281,42 @@ class SimulacionInvierno:
                 self.STB += (self.PV - self.CU)
 
         else:
-            # Déficit
-            self.BENEF += (self.PV * self.GD)
-            demanda_restante = DV - self.GD
+            # Déficit: se vende la energía generada primero
+            if sold_all_flag:
+                # ya se vendió toda la generación, no volver a sumar
+                sold_gen_today = gen_total
+            else:
+                sold_gen_today = gen_total
+                self.BENEF += (self.PV * sold_gen_today)
+
+            demanda_restante = DV - gen_total
             self.GD = 0.0
 
-            if self.BESS >= demanda_restante:
+            if pre_bess >= demanda_restante:
+                # Se vende desde BESS para cubrir la demanda restante
+                sold_bess_today = demanda_restante
                 self.SAB += demanda_restante
                 self.BESS -= demanda_restante
                 self.BENEF += demanda_restante * self.PV
             else:
-                # batería insuficiente
-                self.BENEF += (self.BESS * self.PV)
-                demanda_restante -= self.BESS
+                # batería insuficiente: vender todo lo que queda
+                sold_bess_today = pre_bess
+                self.BENEF += (pre_bess * self.PV)
+                demanda_restante -= pre_bess
                 self.BESS = 0.0
                 # multas por déficit
                 self.BENEF -= (demanda_restante * self.PM)
                 self.STM += (demanda_restante * self.PM)
                 self.C += 1
 
+        # Acumular métricas diarias
+        self.energia_vendida_generacion_total += sold_gen_today
+        if sold_bess_today > 0:
+            self.energia_vendida_bess_total += sold_bess_today
+            self.veces_descargada += 1
+
         # 7. Mantenimiento baterías por ciclos
-        if self.CCC >= 100:
+        if self.CCC == 100:
             self.CBESS = self.CBESS * (1 - 0.01)
             self.CCC = 0
 
@@ -292,6 +341,20 @@ class SimulacionInvierno:
             self.H = 0
 
         # Guardar muestreo del día
+        # Registrar serie diaria completa
+        self.timeseries.append({
+            'Dia': self.T,
+            'Generacion_Total': float(self.GD),
+            'Demanda': float(DV),
+            'BESS_Nivel': float(self.BESS),
+            'Beneficio_Acumulado': float(self.BENEF),
+            'Vendida_Generacion': sold_gen_today,
+            'Vendida_BESS': sold_bess_today,
+            'Turbina_Habilitada': int(self.H),
+            'FO': float(self.FO)
+        })
+
+        # Muestras resumidas (cada 10 días y primeros 10)
         if self.T % 10 == 0 or self.T <= 10:
             self.resultados.append({
                 'Dia': self.T,
@@ -299,9 +362,103 @@ class SimulacionInvierno:
                 'Demanda': float(DV),
                 'BESS_Nivel': float(self.BESS),
                 'Beneficio_Acumulado': float(self.BENEF),
+                'Vendida_Generacion': sold_gen_today,
+                'Vendida_BESS': sold_bess_today,
                 'Turbina_Habilitada': int(self.H),
                 'FO': float(self.FO)
             })
+
+    def generar_graficos(self, output_dir='results', show=True):
+        """Genera y guarda gráficos útiles para la toma de decisiones.
+
+        - Beneficio acumulado vs día
+        - Nivel BESS vs día
+        - Generación total vs Demanda vs día
+        - Nivel Fuel Oil vs día
+        - Histograma del cambio diario de beneficio
+        """
+        if not self.timeseries:
+            print('No hay datos para graficar.')
+            return {}
+
+        out_path = pathlib.Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        df = pd.DataFrame(self.timeseries)
+        df = df.sort_values('Dia')
+
+        dias = df['Dia'].values
+
+        # Beneficio acumulado
+        plt.figure()
+        plt.plot(dias, df['Beneficio_Acumulado'].values, label='Beneficio acumulado')
+        plt.xlabel('Día')
+        plt.ylabel('Beneficio ($)')
+        plt.title('Beneficio acumulado vs Día')
+        plt.grid(True)
+        plt.legend()
+        p1 = out_path / 'beneficio_acumulado.png'
+        plt.savefig(p1)
+
+        # BESS nivel
+        plt.figure()
+        plt.plot(dias, df['BESS_Nivel'].values, label='BESS nivel', color='orange')
+        plt.xlabel('Día')
+        plt.ylabel('Nivel BESS (MWh)')
+        plt.title('Nivel de BESS vs Día')
+        plt.grid(True)
+        plt.legend()
+        p2 = out_path / 'bess_nivel.png'
+        plt.savefig(p2)
+
+        # Generación vs Demanda
+        plt.figure()
+        plt.plot(dias, df['Generacion_Total'].values, label='Generación total', color='green')
+        plt.plot(dias, df['Demanda'].values, label='Demanda', color='red', alpha=0.7)
+        plt.xlabel('Día')
+        plt.ylabel('MWh')
+        plt.title('Generación total y Demanda vs Día')
+        plt.grid(True)
+        plt.legend()
+        p3 = out_path / 'generacion_vs_demanda.png'
+        plt.savefig(p3)
+
+        # Fuel Oil nivel
+        plt.figure()
+        plt.plot(dias, df['FO'].values, label='Fuel Oil (FO)', color='brown')
+        plt.xlabel('Día')
+        plt.ylabel('FO (unidades)')
+        plt.title('Nivel de Fuel Oil vs Día')
+        plt.grid(True)
+        plt.legend()
+        p4 = out_path / 'fuel_oil_nivel.png'
+        plt.savefig(p4)
+
+        # Histograma del cambio diario de beneficio
+        beneficio = df['Beneficio_Acumulado'].values
+        cambios = np.diff(beneficio)
+        plt.figure()
+        plt.hist(cambios, bins=40, color='purple', edgecolor='k', alpha=0.7)
+        plt.xlabel('Cambio diario beneficio ($)')
+        plt.ylabel('Frecuencia')
+        plt.title('Histograma: cambio diario de beneficio')
+        p5 = out_path / 'hist_cambio_beneficio.png'
+        plt.savefig(p5)
+
+        # Mostrar todas las figuras simultáneamente si se pidió
+        if show:
+            plt.show()
+        # Cerrar todas las figuras después de mostrarlas
+        plt.close('all')
+
+        print(f'Graficos guardados en {out_path.resolve()}')
+        return {
+            'beneficio_acumulado': str(p1),
+            'bess_nivel': str(p2),
+            'generacion_vs_demanda': str(p3),
+            'fuel_oil_nivel': str(p4),
+            'hist_cambio_beneficio': str(p5)
+        }
 
     def CABESS(self):
         # costo amortización diario del BESS (valor de ejemplo)
@@ -359,3 +516,5 @@ if __name__ == '__main__':
         import pprint
         print('\nMuestreo días:')
         pprint.pprint(resultados['resultados_muestreados'][:5])
+    # Generar y mostrar gráficos
+    sim.generar_graficos(show=True)

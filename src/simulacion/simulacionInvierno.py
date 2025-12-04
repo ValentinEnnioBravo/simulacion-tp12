@@ -52,12 +52,6 @@ class SimulacionInvierno:
         self.STM = 0.0
         self.C = 0
         self.STI = 0.0
-        # Métricas de venta
-        self.energia_vendida_bess_total = 0.0
-        self.veces_descargada = 0
-        self.energia_vendida_generacion_total = 0.0
-        # Política rápida: vender toda la generación diaria
-        self.policy_vender_todo = False
 
         # Parámetros climáticos/invernales
         # Probabilidad de ola fría que aumenta demanda
@@ -152,8 +146,6 @@ class SimulacionInvierno:
 
         # 3. Generación GDCC1
         GDCC1 = self.sample_cc1()
-        # convertir potencia (MW) a energía diaria aproximada (MWh) assuming 24 h
-        GDCC1 = GDCC1 * 24.0
         r = random.random()
         if self.TG == 'ESTANDAR':
             if r <= 0.02:
@@ -168,8 +160,6 @@ class SimulacionInvierno:
 
         # GDCC2
         GDCC2 = self.sample_cc2()
-        # convertir potencia (MW) a energía diaria aproximada (MWh)
-        GDCC2 = GDCC2 * 24.0
 
         # 4. Rama principal: gas o fuel oil
         if gas:
@@ -191,8 +181,6 @@ class SimulacionInvierno:
             # Turbina a vapor solo si H == 1
             if self.H == 1:
                 GDTV = self.sample_tv()
-                # convertir potencia (MW) a energía diaria aproximada (MWh)
-                GDTV = GDTV * 24.0
                 r = random.random()
                 if self.TG == 'ESTANDAR':
                     if r <= 0.06:
@@ -247,29 +235,11 @@ class SimulacionInvierno:
         if random.random() < self.prob_ola_frio:
             DV = DV * (1 + self.factor_demanda_ola_frio)
 
-        # Guardar totales pre-venta para trazabilidad diaria
-        gen_total = float(self.GD)
-        pre_bess = float(self.BESS)
-        sold_gen_today = 0.0
-        sold_bess_today = 0.0
-        sold_all_flag = False
-
-        # Política rápida: vender toda la generación diaria (ingreso = PV * GD)
-        if self.policy_vender_todo:
-            sold_gen_today = gen_total
-            self.BENEF += (self.PV * sold_gen_today)
-            sold_all_flag = True
-
-        if gen_total >= DV:
-            # Exceso: se vende la demanda inmediatamente desde la generación
-            if sold_all_flag:
-                # ya se vendió toda la generación (política rápida): no almacenar el exceso
-                exceso = gen_total - DV
-            else:
-                sold_gen_today = DV
-                self.BENEF += (self.PV * sold_gen_today)
-                exceso = gen_total - DV
-                self.BESS += exceso
+        if self.GD >= DV:
+            # Exceso
+            self.BENEF += (self.PV * DV)
+            exceso = self.GD - DV
+            self.BESS += exceso
 
             if self.BESS > self.CBESS:
                 # saturado
@@ -281,39 +251,24 @@ class SimulacionInvierno:
                 self.STB += (self.PV - self.CU)
 
         else:
-            # Déficit: se vende la energía generada primero
-            if sold_all_flag:
-                # ya se vendió toda la generación, no volver a sumar
-                sold_gen_today = gen_total
-            else:
-                sold_gen_today = gen_total
-                self.BENEF += (self.PV * sold_gen_today)
-
-            demanda_restante = DV - gen_total
+            # Déficit
+            self.BENEF += (self.PV * self.GD)
+            demanda_restante = DV - self.GD
             self.GD = 0.0
 
-            if pre_bess >= demanda_restante:
-                # Se vende desde BESS para cubrir la demanda restante
-                sold_bess_today = demanda_restante
+            if self.BESS >= demanda_restante:
                 self.SAB += demanda_restante
                 self.BESS -= demanda_restante
                 self.BENEF += demanda_restante * self.PV
             else:
-                # batería insuficiente: vender todo lo que queda
-                sold_bess_today = pre_bess
-                self.BENEF += (pre_bess * self.PV)
-                demanda_restante -= pre_bess
+                # batería insuficiente
+                self.BENEF += (self.BESS * self.PV)
+                demanda_restante -= self.BESS
                 self.BESS = 0.0
                 # multas por déficit
                 self.BENEF -= (demanda_restante * self.PM)
                 self.STM += (demanda_restante * self.PM)
                 self.C += 1
-
-        # Acumular métricas diarias
-        self.energia_vendida_generacion_total += sold_gen_today
-        if sold_bess_today > 0:
-            self.energia_vendida_bess_total += sold_bess_today
-            self.veces_descargada += 1
 
         # 7. Mantenimiento baterías por ciclos
         if self.CCC == 100:
@@ -348,8 +303,6 @@ class SimulacionInvierno:
             'Demanda': float(DV),
             'BESS_Nivel': float(self.BESS),
             'Beneficio_Acumulado': float(self.BENEF),
-            'Vendida_Generacion': sold_gen_today,
-            'Vendida_BESS': sold_bess_today,
             'Turbina_Habilitada': int(self.H),
             'FO': float(self.FO)
         })
@@ -362,8 +315,6 @@ class SimulacionInvierno:
                 'Demanda': float(DV),
                 'BESS_Nivel': float(self.BESS),
                 'Beneficio_Acumulado': float(self.BENEF),
-                'Vendida_Generacion': sold_gen_today,
-                'Vendida_BESS': sold_bess_today,
                 'Turbina_Habilitada': int(self.H),
                 'FO': float(self.FO)
             })

@@ -415,7 +415,8 @@ class SimulacionInvierno:
         # costo amortización diario del BESS (valor de ejemplo)
         return 5000.0
 
-    def ejecutar(self, dias=None):
+    def ejecutar(self, dias=None, tipo_guardia=None, max_fo=None, pv=None, cc=None, pm=None):
+        # 1. Días
         if dias is not None:
             self.TF = int(dias)
         else:
@@ -426,15 +427,64 @@ class SimulacionInvierno:
             except Exception:
                 pass
 
-        # pedir tipo de guardia
-        try:
-            tipo = input('Tipo de guardia: ESTANDAR (1) o MINIMA (0) [1]: ').strip()
-            if tipo == '0':
-                self.TG = 'MINIMA'
-            else:
+        # 2. Tipo de guardia
+        if tipo_guardia is not None:
+            self.TG = 'MINIMA' if str(tipo_guardia) == '0' else 'ESTANDAR'
+        else:
+            try:
+                tipo = input('Tipo de guardia: ESTANDAR (1) o MINIMA (0) [1]: ').strip()
+                if tipo == '0':
+                    self.TG = 'MINIMA'
+                else:
+                    self.TG = 'ESTANDAR'
+            except Exception:
                 self.TG = 'ESTANDAR'
-        except Exception:
-            self.TG = 'ESTANDAR'
+
+        # 3. Max Fuel Oil
+        if max_fo is not None:
+            self.MAX_FO = float(max_fo)
+        else:
+            try:
+                mfo = input('Ingrese capacidad máxima de Fuel Oil [100000.0]: ').strip()
+                if mfo:
+                    self.MAX_FO = float(mfo)
+            except Exception:
+                self.MAX_FO = 100000.0
+        # comenzar con el 50%
+        self.FO = self.MAX_FO * 0.5
+
+        # 4. Precio venta
+        if pv is not None:
+            self.PV = float(pv)
+        else:
+            try:
+                pv_in = input('Ingrese precio de venta $/MWh [50.0]: ').strip()
+                if pv_in:
+                    self.PV = float(pv_in)
+            except Exception:
+                self.PV = 50.0
+
+        # 5. Costo combustible
+        if cc is not None:
+            self.CC = float(cc)
+        else:
+            try:
+                cc_in = input('Ingrese costo combustible $/MWh [10.0]: ').strip()
+                if cc_in:
+                    self.CC = float(cc_in)
+            except Exception:
+                self.CC = 10.0
+
+        # 6. Precio multa
+        if pm is not None:
+            self.PM = float(pm)
+        else:
+            try:
+                pm_in = input('Ingrese precio multa por MWh no satisfecho [80.0]: ').strip()
+                if pm_in:
+                    self.PM = float(pm_in)
+            except Exception:
+                self.PM = 80.0
 
         print(f"Iniciando simulación invierno {self.TF} días (TG={self.TG})...")
         while self.T < self.TF:

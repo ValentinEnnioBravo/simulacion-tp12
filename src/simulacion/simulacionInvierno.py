@@ -11,6 +11,8 @@ import os
 import random
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import pathlib
 
 
 class SimulacionInvierno:
@@ -63,6 +65,8 @@ class SimulacionInvierno:
 
         # Resultados diarios para muestreo
         self.resultados = []
+        # Series temporales diarias (una entrada por día)
+        self.timeseries = []
 
     def _cargar_datos(self):
         """Carga CSVs si existen y prepara vectores de muestreo."""
@@ -267,7 +271,7 @@ class SimulacionInvierno:
                 self.C += 1
 
         # 7. Mantenimiento baterías por ciclos
-        if self.CCC >= 100:
+        if self.CCC == 100:
             self.CBESS = self.CBESS * (1 - 0.01)
             self.CCC = 0
 
@@ -292,6 +296,18 @@ class SimulacionInvierno:
             self.H = 0
 
         # Guardar muestreo del día
+        # Registrar serie diaria completa
+        self.timeseries.append({
+            'Dia': self.T,
+            'Generacion_Total': float(self.GD),
+            'Demanda': float(DV),
+            'BESS_Nivel': float(self.BESS),
+            'Beneficio_Acumulado': float(self.BENEF),
+            'Turbina_Habilitada': int(self.H),
+            'FO': float(self.FO)
+        })
+
+        # Muestras resumidas (cada 10 días y primeros 10)
         if self.T % 10 == 0 or self.T <= 10:
             self.resultados.append({
                 'Dia': self.T,
@@ -302,6 +318,98 @@ class SimulacionInvierno:
                 'Turbina_Habilitada': int(self.H),
                 'FO': float(self.FO)
             })
+
+    def generar_graficos(self, output_dir='results', show=True):
+        """Genera y guarda gráficos útiles para la toma de decisiones.
+
+        - Beneficio acumulado vs día
+        - Nivel BESS vs día
+        - Generación total vs Demanda vs día
+        - Nivel Fuel Oil vs día
+        - Histograma del cambio diario de beneficio
+        """
+        if not self.timeseries:
+            print('No hay datos para graficar.')
+            return {}
+
+        out_path = pathlib.Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        df = pd.DataFrame(self.timeseries)
+        df = df.sort_values('Dia')
+
+        dias = df['Dia'].values
+
+        # Beneficio acumulado
+        plt.figure()
+        plt.plot(dias, df['Beneficio_Acumulado'].values, label='Beneficio acumulado')
+        plt.xlabel('Día')
+        plt.ylabel('Beneficio ($)')
+        plt.title('Beneficio acumulado vs Día')
+        plt.grid(True)
+        plt.legend()
+        p1 = out_path / 'beneficio_acumulado.png'
+        plt.savefig(p1)
+
+        # BESS nivel
+        plt.figure()
+        plt.plot(dias, df['BESS_Nivel'].values, label='BESS nivel', color='orange')
+        plt.xlabel('Día')
+        plt.ylabel('Nivel BESS (MWh)')
+        plt.title('Nivel de BESS vs Día')
+        plt.grid(True)
+        plt.legend()
+        p2 = out_path / 'bess_nivel.png'
+        plt.savefig(p2)
+
+        # Generación vs Demanda
+        plt.figure()
+        plt.plot(dias, df['Generacion_Total'].values, label='Generación total', color='green')
+        plt.plot(dias, df['Demanda'].values, label='Demanda', color='red', alpha=0.7)
+        plt.xlabel('Día')
+        plt.ylabel('MWh')
+        plt.title('Generación total y Demanda vs Día')
+        plt.grid(True)
+        plt.legend()
+        p3 = out_path / 'generacion_vs_demanda.png'
+        plt.savefig(p3)
+
+        # Fuel Oil nivel
+        plt.figure()
+        plt.plot(dias, df['FO'].values, label='Fuel Oil (FO)', color='brown')
+        plt.xlabel('Día')
+        plt.ylabel('FO (unidades)')
+        plt.title('Nivel de Fuel Oil vs Día')
+        plt.grid(True)
+        plt.legend()
+        p4 = out_path / 'fuel_oil_nivel.png'
+        plt.savefig(p4)
+
+        # Histograma del cambio diario de beneficio
+        beneficio = df['Beneficio_Acumulado'].values
+        cambios = np.diff(beneficio)
+        plt.figure()
+        plt.hist(cambios, bins=40, color='purple', edgecolor='k', alpha=0.7)
+        plt.xlabel('Cambio diario beneficio ($)')
+        plt.ylabel('Frecuencia')
+        plt.title('Histograma: cambio diario de beneficio')
+        p5 = out_path / 'hist_cambio_beneficio.png'
+        plt.savefig(p5)
+
+        # Mostrar todas las figuras simultáneamente si se pidió
+        if show:
+            plt.show()
+        # Cerrar todas las figuras después de mostrarlas
+        plt.close('all')
+
+        print(f'Graficos guardados en {out_path.resolve()}')
+        return {
+            'beneficio_acumulado': str(p1),
+            'bess_nivel': str(p2),
+            'generacion_vs_demanda': str(p3),
+            'fuel_oil_nivel': str(p4),
+            'hist_cambio_beneficio': str(p5)
+        }
 
     def CABESS(self):
         # costo amortización diario del BESS (valor de ejemplo)
@@ -359,3 +467,5 @@ if __name__ == '__main__':
         import pprint
         print('\nMuestreo días:')
         pprint.pprint(resultados['resultados_muestreados'][:5])
+    # Generar y mostrar gráficos
+    sim.generar_graficos(show=True)

@@ -1,4 +1,3 @@
-
 """
 SIMULACIÓN DEL SISTEMA ENERGÉTICO
 Basado en el diagrama de flujo especificado y las funciones de distribuciones probabilísticas
@@ -38,6 +37,14 @@ class SimulacionSistemaEnergetico:
         self.STB = 0         # Energía sobrante almacenada
         self.C = 0           # Contador de veces que se necesitó el BESS
         self.CBESS_inicial = 1000
+        self.STM = 0
+        # Tracking totals for reporting
+        self.total_revenue = 0.0                # Ingresos brutos por venta de energía
+        self.total_revenue_from_bess = 0.0      # Ingresos obtenidos específicamente del BESS
+        self.total_personal_cost = 0.0          # Costos de personal acumulados
+        self.total_fuel_cost = 0.0              # Costos de combustible acumulados
+        self.total_bess_amortization = 0.0      # Amortización del BESS acumulada
+        self.total_fines = 0.0                  # Multas por déficit acumuladas
         
         # Parámetros económicos
         self.PV = 50         # Precio de venta por megavatio generado
@@ -168,13 +175,16 @@ class SimulacionSistemaEnergetico:
         
         # Aplicar costos
         self.BENEF -= costo_personal        # Costo personal 
+        self.total_personal_cost += costo_personal
         self.BENEF -= self.CC * self.GD     # Costo combustible
+        self.total_fuel_cost += self.CC * self.GD
         
         # --- MANEJO DEL SISTEMA DE ENERGÍA Y ALMACENAMIENTO ---
         DV_value = self.DV()
-        
+        deficit = 0
         if self.GD >= DV_value:
             self.BENEF += DV_value * self.PV
+            self.total_revenue += DV_value * self.PV
             energia_sobrante = self.GD - DV_value
             self.BESS += energia_sobrante
             
@@ -187,16 +197,25 @@ class SimulacionSistemaEnergetico:
                 self.STB += self.PV - self.CU 
         else:
             self.BENEF += self.PV * self.GD
+            self.total_revenue += self.PV * self.GD
             deficit = DV_value - self.GD
             self.GD = 0
             
             if self.BESS >= deficit: # Alcanza
                 self.BENEF += self.PV * deficit
+                self.total_revenue += self.PV * deficit
+                self.total_revenue_from_bess += self.PV * deficit
                 self.BESS -= deficit
             else: # No, se consume lo que hay
+                # Vender la energía disponible en BESS
                 self.BENEF += self.PV * self.BESS
-                deficit =- self.BESS
+                self.total_revenue += self.PV * self.BESS
+                self.total_revenue_from_bess += self.PV * self.BESS
+                # Reducir el déficit por lo que se consumió del BESS
+                deficit -= self.BESS
+                # Aplicar multa por el déficit restante
                 self.BENEF -= deficit * self.PM
+                self.total_fines += deficit * self.PM
                 self.BESS = 0
                 self.STM = self.STM + deficit * self.PM
                 self.C = self.C + 1
@@ -205,21 +224,23 @@ class SimulacionSistemaEnergetico:
         self.CCC += 1
         self.BENEF = self.BENEF + deficit * self.PV
         if self.CCC >= 100: # Cumplio ciclos
-            self.CBESS *= (1 - 0.01) # Reduccion por ciclos
+            self.CBESS = max(0, self.CBESS - self.CBESS_inicial * 0.01) # Reduccion por ciclos
             self.CCC = 0
         
         # Autodescarga diaria del BESS
         self.BESS *= (1 - self.AD())
         
         # Amortización del BESS
-        self.BENEF -= self.CABESS()
+        amort = self.CABESS()
+        self.BENEF -= amort
+        self.total_bess_amortization += amort
         
         # Registrar ingresos de la turbina
         if self.H == 1:
             self.STI += (self.PV - self.CU) * min(DV_value, GDTV_value) / self.I
         
         # Fallo de turbina
-        r = self.CF()
+        r = random.random()
         if r <= 0.01 and self.H == 1:
             self.RP = self.T + 3
             self.H = 0
@@ -234,7 +255,7 @@ class SimulacionSistemaEnergetico:
                 'BESS_Capacidad': self.CBESS,
                 'Beneficio_Acumulado': self.BENEF,
                 'Turbina_Habilitada': self.H,
-                'Tipo_Guardia': TG
+                'Tipo_Guardia': self.TG
             })
     
     def ejecutar_simulacion(self):
@@ -261,17 +282,7 @@ class SimulacionSistemaEnergetico:
         # Asignar TF
         self.TG = GUARDIAS[tipo]
 
-        # Ingresar potencia base disponible
-        while True:
-            potencia = input("Ingrese la potencia base disponible: ").strip()
-            if potencia.isnumeric():
-                potencia = int(potencia)
-                break
-            print("Debes ingresar un número\n")
-        # Asignar TF
-        self.PBD = potencia
-
-        # Ingresar potencia base disponible
+        # Ingresar precio de venta disponible
         while True:
             pv = input("Ingrese el precio de venta: ").strip()
             if pv.isnumeric():
@@ -291,7 +302,7 @@ class SimulacionSistemaEnergetico:
         # Asignar TF
         self.PM = pm
         
-        # Ingresar potencia base disponible
+        # Ingresar capacidad del bess
         while True:
             cbess = input("Ingrese la capacidad del almacenamiento en sistema BESS: ").strip()
             if cbess.isnumeric():
@@ -312,23 +323,89 @@ class SimulacionSistemaEnergetico:
         
         # Calcular indicadores finales
         self.CR = self.BENEF / self.TF
-        self.IR = self.STI / self.TF
+
+        return self.obtener_resultados()
+
+    def ejecutar_simulacion_parametros(self, dias, tipo_guardia, precio_venta, precio_multa, capacidad_bess):
+        """
+        Ejecutar la simulación completa
+        
+        Parámetros:
+        - dias (int): Cantidad de días de la simulación
+        - tipo_guardia (int): Tipo de guardia - ESTANDAR (1) o GUARDIA MINIMA (0)
+        - precio_venta (int): Precio de venta
+        - precio_multa (int): Precio de la multa
+        - capacidad_bess (int): Capacidad del almacenamiento en sistema BESS
+        """
+        
+        # Asignar días
+        self.TF = dias
+
+        # Asignar tipo de guardia
+        self.TG = GUARDIAS[tipo_guardia]
+
+        # Asignar precio de venta
+        self.PV = precio_venta
+        
+        # Asignar precio de multa
+        self.PM = precio_multa
+        
+        # Asignar capacidad del BESS
+        self.CBESS = capacidad_bess
+        self.CBESS_inicial = capacidad_bess
+
+        # Ejecución de la simulación
+        print(f"\nIniciando simulación para {self.TF} días...\n")
+        
+        while self.T < self.TF:
+            self.simular_dia()
+        
+        print("Simulación completada!\n")
+        
+        # Calcular indicadores finales
+        self.CR = self.BENEF / self.TF
 
         return self.obtener_resultados()
 
     
     def obtener_resultados(self):
         """Obtener resultados finales de la simulación"""
+        # Calcular meses (usar fracción de mes si corresponde)
+        meses = max(1.0, self.TF / 30.0)
+
+        total_revenue = self.total_revenue
+        total_costs = (
+            self.total_personal_cost +
+            self.total_fuel_cost +
+            self.total_bess_amortization +
+            self.total_fines
+        )
+
+        RIT = total_revenue / meses  # Ingreso Total Promedio Mensual
+        RCT = total_costs / meses    # Costo Total Promedio Mensual
+        # Costo total por multas por ciclo (usar contador de ciclos completos)
+        ciclos = max(1, self.CCC)
+        RCM = self.total_fines / ciclos
+        # Ahorro promedio mensual por BESS (ingresos desde BESS menos su amortización)
+        RAB = (self.total_revenue_from_bess - self.total_bess_amortization) / meses
+
         return {
             'beneficio_total': self.BENEF,
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
             'energia_sobrante_total': self.STB,
             'rendimiento_promedio_diario': self.CR,
-            'ingresos_turbina_promedio': self.IR,
             'dias_simulados': self.T,
             'estado_final_turbina': self.H,
-            'dataframe_resultados': pd.DataFrame(self.resultados_diarios)
+            'dataframe_resultados': pd.DataFrame(self.resultados_diarios),
+            'RIT': RIT,
+            'RCT': RCT,
+            'RCM': RCM,
+            'RAB': RAB,
+            'total_revenue': total_revenue,
+            'total_costs': total_costs,
+            'total_revenue_from_bess': self.total_revenue_from_bess,
+            'total_fines': self.total_fines
         }
     
     def generar_reporte(self):
@@ -344,23 +421,101 @@ class SimulacionSistemaEnergetico:
             ["Capacidad Máxima del BESS", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
             ["Energía Sobrante Total", f"{resultados['energia_sobrante_total']:.2f} MW"],
             ["Rendimiento Promedio Diario", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
-            ["Ingresos por Turbina Promedio", f"${resultados['ingresos_turbina_promedio']:,.2f}"],
             ["Días Simulados", str(resultados['dias_simulados'])],
             ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"]
         ]
+
+        # Agregar nuevas métricas solicitadas
+        metricas.append(["RIT (Ingreso Total Prom. Mensual)", f"${resultados['RIT']:,.2f}"])
+        metricas.append(["RCT (Costo Total Prom. Mensual)", f"${resultados['RCT']:,.2f}"])
+        metricas.append(["RCM (Costo Multas por Ciclo)", f"${resultados['RCM']:,.2f}"])
+        metricas.append(["RAB (Ahorro Prom. Mensual BESS)", f"${resultados['RAB']:,.2f}"])
         
         print(tabulate(metricas, headers=["Métrica", "Valor"], tablefmt="grid"))
         
         return resultados
 
+    def generar_graficos(self, resultados=None, guardar=False, carpeta='plots'):
+        """Generar gráficos de seguimiento de la simulación.
 
-# Ejemplo de uso
-if __name__ == "__main__":
-    # Crear y ejecutar simulación
-    simulacion = SimulacionSistemaEnergetico(dias_simulacion=1000)
+        Parámetros:
+        - resultados (dict): resultado de `obtener_resultados`. Si es None, se llama internamente.
+        - guardar (bool): si True, guarda los PNG en `carpeta`.
+        - carpeta (str): ruta de carpeta para guardar los gráficos.
+        """
+        if resultados is None:
+            resultados = self.obtener_resultados()
+
+        df = resultados.get('dataframe_resultados')
+        if df is None or df.empty:
+            print('No hay datos muestreados para graficar. Ejecutá la simulación con suficiente muestreo.')
+            return None
+
+        # Asegurar que la columna 'Dia' sea numérica
+        df = df.copy()
+        df['Dia'] = pd.to_numeric(df['Dia'])
+
+        # Preparar la carpeta para guardar
+        if guardar:
+            os.makedirs(carpeta, exist_ok=True)
+
+        # Figura 1: Beneficio acumulado y BESS nivel
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+        ax = axes[0, 0]
+        ax.plot(df['Dia'], df['Beneficio_Acumulado'], marker='o')
+        ax.set_title('Beneficio Acumulado por Día')
+        ax.set_xlabel('Día')
+        ax.set_ylabel('Beneficio')
+
+        ax = axes[0, 1]
+        ax.plot(df['Dia'], df['BESS_Nivel'], marker='o', color='orange')
+        ax.set_title('Nivel BESS por Día')
+        ax.set_xlabel('Día')
+        ax.set_ylabel('BESS (MW)')
+
+        # Figura 2: Generación total vs Demanda
+        ax = axes[1, 0]
+        if 'Generacion_Total' in df.columns and 'Demanda' in df.columns:
+            ax.plot(df['Dia'], df['Generacion_Total'], label='Generación Total', marker='o')
+            ax.plot(df['Dia'], df['Demanda'], label='Demanda', marker='x')
+            ax.set_title('Generación Total vs Demanda')
+            ax.set_xlabel('Día')
+            ax.set_ylabel('MW')
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, 'Datos insuficientes', ha='center')
+
+        # Figura 3: Barras con métricas RIT, RCT, RAB, RCM
+        ax = axes[1, 1]
+        metrics = ['RIT', 'RCT', 'RAB', 'RCM']
+        values = [resultados.get(k, 0.0) for k in metrics]
+        ax.bar(metrics, values, color=['green', 'red', 'blue', 'purple'])
+        ax.set_title('Métricas Mensuales')
+
+        plt.tight_layout()
+
+        if guardar:
+            ruta = os.path.join(carpeta, 'simulacion_verano_graficos.png')
+            fig.savefig(ruta)
+            print(f'Gráficos guardados en: {ruta}')
+
+        try:
+            plt.show()
+        except Exception:
+            # En entornos sin display, show puede fallar; ignorar
+            pass
+
+        return fig
+
+if __name__ == '__main__':
+    simulacion = SimulacionSistemaEnergetico()
     resultados = simulacion.ejecutar_simulacion()
-    
     # Generar reporte
     simulacion.generar_reporte()
-    
+    # Generar gráficos de seguimiento
+    try:
+        simulacion.generar_graficos(resultados, guardar=False)
+    except Exception:
+        pass
     print("\n Simulación completada exitosamente!")

@@ -27,23 +27,23 @@ class SimulacionInvierno:
         self.H = 1  # 1 = habilitada, 0 = deshabilitada
 
         # Fuel oil
-        self.MAX_FO = 100000.0
+        self.MAX_FO = 500000.0
         self.FO = self.MAX_FO
-        self.PFO = 50000.0
+        self.PFO = 200000.0
 
         # Generación y BESS
         self.GD = 0.0
         self.TG = 'ESTANDAR'  # Tipo de guardia: 'ESTANDAR' o 'MINIMA'
         self.BESS = 0.0
-        self.CBESS = 1000.0
+        self.CBESS = 200.0
         self.CCC = 0  # contador ciclos de carga
 
         # Economía
         self.BENEF = 0.0
-        self.PV = 50.0   # precio venta $/MWh
-        self.CC = 10.0   # costo combustible $/MWh
+        self.PV = 87.0   # precio venta $/MWh
+        self.CC = 30.0   # costo combustible $/MWh
         self.CU = 5.0    # costo uso
-        self.PM = 80.0   # precio multa por MWh no satisfecho
+        self.PM = 180.0   # precio multa por MWh no satisfecho
         self.I = 1.0
 
         # Estadísticas
@@ -75,12 +75,13 @@ class SimulacionInvierno:
             self.df_dem2 = pd.read_csv(dem2_path)
             # columna con demanda en MWh
             if 'Demanda_MWh' in self.df_dem2.columns:
-                self.demanda_samples = self.df_dem2['Demanda_MWh'].values
+                #! OJO ACA METI UNA NEGRADA
+                self.demanda_samples = self.df_dem2['Demanda_MWh'].values * 0.45
             else:
-                self.demanda_samples = np.full(1000, 4000.0)
+                self.demanda_samples = np.full(1000, 1650.0)
 
         except Exception:
-            self.demanda_samples = np.full(1000, 4000.0)
+            self.demanda_samples = np.full(1000, 1650.0)
 
         try:
             cc1_path = os.path.join(self.public_path, 'Generacion_CC1.csv')
@@ -254,7 +255,7 @@ class SimulacionInvierno:
             # Déficit
             self.BENEF += (self.PV * self.GD)
             demanda_restante = DV - self.GD
-            self.GD = 0.0
+            #! self.GD = 0.0
 
             if self.BESS >= demanda_restante:
                 self.SAB += demanda_restante
@@ -415,7 +416,7 @@ class SimulacionInvierno:
         # costo amortización diario del BESS (valor de ejemplo)
         return 5000.0
 
-    def ejecutar(self, dias=None, tipo_guardia=None, max_fo=None, pv=None, cc=None, pm=None):
+    def ejecutar(self, dias=None, tipo_guardia=None, max_fo=None, pfo=None, cbess=None, pv=None, cc=None, pm=None):
         # 1. Días
         if dias is not None:
             self.TF = int(dias)
@@ -445,7 +446,7 @@ class SimulacionInvierno:
             self.MAX_FO = float(max_fo)
         else:
             try:
-                mfo = input('Ingrese capacidad máxima de Fuel Oil [100000.0]: ').strip()
+                mfo = input('Ingrese capacidad máxima de Fuel Oil [500000.0]: ').strip()
                 if mfo:
                     self.MAX_FO = float(mfo)
             except Exception:
@@ -453,12 +454,41 @@ class SimulacionInvierno:
         # comenzar con el 50%
         self.FO = self.MAX_FO * 0.5
 
+        # 3b. Tamaño del pedido de Fuel Oil (PFO)
+        if pfo is not None:
+            try:
+                self.PFO = float(pfo)
+            except Exception:
+                pass
+        else:
+            try:
+                pfo_in = input('Ingrese tamaño del pedido de Fuel Oil [200000.0]: ').strip()
+                if pfo_in:
+                    self.PFO = float(pfo_in)
+            except Exception:
+                # mantener valor por defecto
+                pass
+
+        # 3c. Capacidad máxima del BESS (CBESS)
+        if cbess is not None:
+            try:
+                self.CBESS = float(cbess)
+            except Exception:
+                pass
+        else:
+            try:
+                cbess_in = input('Ingrese capacidad máxima de almacenamiento BESS [200.0]: ').strip()
+                if cbess_in:
+                    self.CBESS = float(cbess_in)
+            except Exception:
+                pass
+
         # 4. Precio venta
         if pv is not None:
             self.PV = float(pv)
         else:
             try:
-                pv_in = input('Ingrese precio de venta $/MWh [50.0]: ').strip()
+                pv_in = input('Ingrese precio de venta $/MWh [87.0]: ').strip()
                 if pv_in:
                     self.PV = float(pv_in)
             except Exception:
@@ -469,7 +499,7 @@ class SimulacionInvierno:
             self.CC = float(cc)
         else:
             try:
-                cc_in = input('Ingrese costo combustible $/MWh [10.0]: ').strip()
+                cc_in = input('Ingrese costo combustible $/MWh [30.0]: ').strip()
                 if cc_in:
                     self.CC = float(cc_in)
             except Exception:
@@ -480,7 +510,7 @@ class SimulacionInvierno:
             self.PM = float(pm)
         else:
             try:
-                pm_in = input('Ingrese precio multa por MWh no satisfecho [80.0]: ').strip()
+                pm_in = input('Ingrese precio multa por MWh no satisfecho [180.0]: ').strip()
                 if pm_in:
                     self.PM = float(pm_in)
             except Exception:
@@ -516,6 +546,7 @@ if __name__ == '__main__':
     if resultados['resultados_muestreados']:
         import pprint
         print('\nMuestreo días:')
-        pprint.pprint(resultados['resultados_muestreados'][:5])
+        #! pprint.pprint(resultados['resultados_muestreados'][:5])
+        pprint.pprint(resultados['resultados_muestreados'])
     # Generar y mostrar gráficos
     sim.generar_graficos(show=True)

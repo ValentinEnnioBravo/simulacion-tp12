@@ -13,6 +13,7 @@ import random
 from scipy import stats
 import os
 from tabulate import tabulate
+from datetime import datetime
 
 GUARDIAS = ["MINIMA","ESTANDAR"]
 
@@ -38,6 +39,9 @@ class SimulacionSistemaEnergetico:
         self.C = 0           # Contador de veces que se necesitó el BESS
         self.CBESS_inicial = 1000
         self.STM = 0
+        # Pérdidas a monitorear
+        self.total_forced_failure_loss_mw = 0.0  # MW perdidos por fallas forzadas
+        self.total_heatwave_loss_mw = 0.0        # MW perdidos por olas de calor
         # Tracking totals for reporting
         self.total_revenue = 0.0                # Ingresos brutos por venta de energía
         self.total_revenue_from_bess = 0.0      # Ingresos obtenidos específicamente del BESS
@@ -69,11 +73,11 @@ class SimulacionSistemaEnergetico:
         self.CF_dist = stats.pearson3.rvs(skew=-0.91, loc=0.66, scale=0.47, size=1000)
         
         # Demanda Primer Semestre
-        self.DV_dist = stats.laplace_asymmetric.rvs(kappa=1.52, loc=2360.46, scale=162.14, size=1000)
-        
+        self.DV_dist = stats.laplace_asymmetric.rvs(kappa=0.507814630112044, loc=1471.1609368658437, scale=100.08976590974257, size=4000, random_state=None)
+
         # Demanda Segundo Semestre
-        self.DI_dist = stats.gumbel_r.rvs(loc=1734.01, scale=206.19, size=1000)
-        
+        self.DI_dist = stats.burr.rvs(c=51.13371126652562, d=52071.5505060936, loc=-114.25847550821729, scale=1526.7595884235452, size=4000, random_state=None)
+
         # Generación diaria de CC1
         self.GD1_dist = stats.gennorm.rvs(beta=1.6831, loc=678.46, scale=164.81, size=1000)
         
@@ -96,11 +100,8 @@ class SimulacionSistemaEnergetico:
     
     def DV(self):
         """Demanda Primer Semestre"""
-        return np.random.choice(self.DV_dist, 1)[0]
-    
-    def DI(self):
-        """Demanda Segundo Semestre"""
-        return np.random.choice(self.DI_dist, 1)[0]
+        variable = np.random.choice(self.DV_dist, 1)[0]
+        return variable 
     
     def GDCC1(self):
         """Generación diaria de CC1"""
@@ -120,7 +121,7 @@ class SimulacionSistemaEnergetico:
     
     def CABESS(self):
         """Costo de amortización BESS"""
-        return 5000
+        return 5*self.CBESS
     
     def simular_dia(self):
         """Simular un día completo del sistema energético"""
@@ -134,10 +135,10 @@ class SimulacionSistemaEnergetico:
             self.H = 1  # Habilitar turbina a vapor
         
         if self.TG == "ESTANDAR":
-            PFC1, PFC2, PFTV = 0.02, 0.03, 0.06
+            PFC1, PFC2, PFTV = 0.15, 0.10, 0.20
             costo_personal = 22000
         else:  # TG ≠ ESTÁNDAR
-            PFC1, PFC2, PFTV = 0.03, 0.045, 0.09
+            PFC1, PFC2, PFTV = 0.35, 0.45, 0.20
             costo_personal = 15000
         
         # --- GENERACIÓN DE ENERGÍA ---
@@ -146,7 +147,9 @@ class SimulacionSistemaEnergetico:
         GDCC1_value = self.GDCC1()
         r = random.random()
         if r <= PFC1: # Falla el Ciclo Combinado 1
-            self.GD += GDCC1_value * 0.61
+            perdida = GDCC1_value * (1 - 0.61)
+            self.total_forced_failure_loss_mw += perdida
+            self.GD += GDCC1_value - perdida
         else:
             self.GD += GDCC1_value
         
@@ -154,14 +157,19 @@ class SimulacionSistemaEnergetico:
         GDCC2_value = self.GDCC2()
         r = random.random()
         if r <= PFC2: # Falla el Ciclo Combinado 2
-            self.GD += GDCC2_value * 0.73
+            perdida = GDCC2_value * (1 - 0.73)
+            self.total_forced_failure_loss_mw += perdida
+            self.GD += GDCC2_value - perdida
         else:
             self.GD += GDCC2_value
         
         # ¿Ola de calor?
         r = random.random()
         if r < 0.4:
-            self.GD *= (1 - self.PP())
+            pp_value = self.PP()
+            perdida_ola_calor = self.GD * pp_value
+            self.total_heatwave_loss_mw += perdida_ola_calor
+            self.GD -= perdida_ola_calor
         
         # Turbina de Vapor habilitada
         GDTV_value = 0
@@ -169,7 +177,9 @@ class SimulacionSistemaEnergetico:
             GDTV_value = self.GDTV()
             r = random.random()
             if r <= PFTV: # Falla Turbina de Vapor
-                self.GD += GDTV_value * 0.84
+                perdida = GDTV_value * (1 - 0.84)
+                self.total_forced_failure_loss_mw += perdida
+                self.GD += GDTV_value - perdida
             else:
                 self.GD += GDTV_value
         
@@ -180,13 +190,16 @@ class SimulacionSistemaEnergetico:
         self.total_fuel_cost += self.CC * self.GD
         
         # --- MANEJO DEL SISTEMA DE ENERGÍA Y ALMACENAMIENTO ---
+        # Guardar la generación total del día antes de procesarla
+        generacion_total_dia = self.GD
+        
         DV_value = self.DV()
         deficit = 0
         if self.GD >= DV_value:
             self.BENEF += DV_value * self.PV
             self.total_revenue += DV_value * self.PV
             energia_sobrante = self.GD - DV_value
-            self.BESS += energia_sobrante
+            self.BESS += energia_sobrante*7
             
             if self.BESS >= self.CBESS:
                 self.BESS = self.CBESS
@@ -221,9 +234,7 @@ class SimulacionSistemaEnergetico:
                 self.C = self.C + 1
         
         # Contador de ciclos completos
-        self.CCC += 1
-        self.BENEF = self.BENEF + deficit * self.PV
-        if self.CCC >= 100: # Cumplio ciclos
+        if self.CCC == 100: # Cumplio ciclos
             self.CBESS = max(0, self.CBESS - self.CBESS_inicial * 0.01) # Reduccion por ciclos
             self.CCC = 0
         
@@ -249,7 +260,7 @@ class SimulacionSistemaEnergetico:
         if self.T % 10 == 0 or self.T <= 10:
             self.resultados_diarios.append({
                 'Dia': self.T,
-                'Generacion_Total': self.GD,
+                'Generacion_Total': generacion_total_dia,
                 'Demanda': DV_value,
                 'BESS_Nivel': self.BESS,
                 'BESS_Capacidad': self.CBESS,
@@ -272,7 +283,7 @@ class SimulacionSistemaEnergetico:
         # Asignar dias
         self.TF = dias
 
-        # Solicitar tipo de simulación
+        # Solicitar tipo de guardia
         while True:
             tipo = input("Ingrese el tipo de guardia: ESTANDAR (1) o GUARDIA MINIMA (0): ").strip()
             if tipo in ("1", "0"):
@@ -290,8 +301,8 @@ class SimulacionSistemaEnergetico:
                 break
             print("Debes ingresar un número\n")
         # Asignar TF
-        self.CBESS = cbess
-        self.CBESS_inicial = cbess
+        self.CBESS = cbess*100
+        self.CBESS_inicial = cbess/2
 
         # Ejecución de la simulación
         print(f"\nIniciando simulación para {self.TF} días...\n")
@@ -365,15 +376,20 @@ class SimulacionSistemaEnergetico:
         RCT = total_costs / meses    # Costo Total Promedio Mensual
         # Costo total por multas por ciclo (usar contador de ciclos completos)
         ciclos = max(1, self.CCC)
-        RCM = self.total_fines / ciclos
+        RCM = self.total_fines / meses
         # Ahorro promedio mensual por BESS (ingresos desde BESS menos su amortización)
-        RAB = (self.total_revenue_from_bess - self.total_bess_amortization) / meses
+        RAB = (self.total_revenue_from_bess) / meses
+        # Costos (en MW) por fallas forzadas
+        CFF_total = self.total_forced_failure_loss_mw
+        CFF_prom_mensual = CFF_total / meses
+        # Pérdida promedio mensual por ola de calor
+        PPOC_prom_mensual = self.total_heatwave_loss_mw / meses
 
         return {
-            'beneficio_total': self.BENEF,
+            'beneficio_total': (self.BENEF/meses),
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
-            'energia_sobrante_total': self.STB,
+            'energia_sobrante_total': self.STB/meses,
             'rendimiento_promedio_diario': self.CR,
             'dias_simulados': self.T,
             'estado_final_turbina': self.H,
@@ -382,10 +398,12 @@ class SimulacionSistemaEnergetico:
             'RCT': RCT,
             'RCM': RCM,
             'RAB': RAB,
-            'total_revenue': total_revenue,
-            'total_costs': total_costs,
-            'total_revenue_from_bess': self.total_revenue_from_bess,
-            'total_fines': self.total_fines
+            'CFF_prom_mensual_MW': CFF_prom_mensual,
+            'PPOC_prom_mensual_MW': PPOC_prom_mensual,
+            'total_revenue': total_revenue/meses,
+            'total_costs': total_costs/meses,
+            'total_revenue_from_bess': self.total_revenue_from_bess/meses,
+            'total_fines': self.total_fines/meses
         }
     
     def generar_reporte(self):
@@ -396,25 +414,80 @@ class SimulacionSistemaEnergetico:
         print("=" * 50)
         
         metricas = [
-            ["Beneficio Total", f"${resultados['beneficio_total']:,.2f}"],
-            ["Capacidad Final del BESS", f"{resultados['capacidad_final_bess']:.2f} MW"],
-            ["Capacidad Máxima del BESS", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
-            ["Energía Sobrante Total", f"{resultados['energia_sobrante_total']:.2f} MW"],
-            ["Rendimiento Promedio Diario", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
+            ["BPM (Beneficio Promedio Mensual)", f"${resultados['beneficio_total']:,.2f}"],
+            ["BESS (Capacidad Final del BESS)", f"{resultados['capacidad_final_bess']:.2f} MW"],
+            ["CBESS (Capacidad Máxima del BESS)", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
+            ["RPD (Rendimiento Promedio Diario)", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
+            ["IPM (Ingreso Prom. Mensual)", f"${resultados['RIT']:,.2f}"],
+            ["CPM (Costo Prom. Mensual)", f"${resultados['RCT']:,.2f}"],
+            ["CTM (Costo Prom. Mensual por Multas)", f"${resultados['RCM']:,.2f}"],
+            ["AB (Ahorro Prom. Mensual BESS)", f"${resultados['RAB']:,.2f}"],
+            ["CFF-PM (Prom. mensual MW perdidos por fallas)", f"{resultados['CFF_prom_mensual_MW']:,.2f} MW"],
+            ["PPOC (Pérdida prom. mensual por ola de calor)", f"{resultados['PPOC_prom_mensual_MW']:,.2f} MW"],
             ["Días Simulados", str(resultados['dias_simulados'])],
-            ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"]
+            ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"],
+            ["Sumatoria de energía almacenada en BESS", f"{resultados['energia_sobrante_total']:.2f} MW"]
         ]
-
-        # Agregar nuevas métricas solicitadas
-        metricas.append(["RIT (Ingreso Total Prom. Mensual)", f"${resultados['RIT']:,.2f}"])
-        metricas.append(["RCT (Costo Total Prom. Mensual)", f"${resultados['RCT']:,.2f}"])
-        metricas.append(["RCM (Costo Multas por Ciclo)", f"${resultados['RCM']:,.2f}"])
-        metricas.append(["RAB (Ahorro Prom. Mensual BESS)", f"${resultados['RAB']:,.2f}"])
         
         print(tabulate(metricas, headers=["Métrica", "Valor"], tablefmt="grid"))
         
+        # Exportar resultados a CSV
+        self.exportar_resultados_csv(resultados)
+        
         return resultados
 
+    def exportar_resultados_csv(self, resultados):
+        """Exportar resultados de la simulación a un archivo CSV en /results"""
+        # Crear carpeta results si no existe
+        results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Nombre del archivo consolidado
+        filename = "simulaciones_verano.csv"
+        filepath = os.path.join(results_dir, filename)
+        
+        # Preparar datos de esta simulación como una fila
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        datos_fila = {
+            'Fecha_Hora': timestamp,
+            # Variables de control
+            'Tipo_Guardia': self.TG,
+            'Precio_Venta': self.PV,
+            'Precio_Multa': self.PM,
+            'Capacidad_Inicial_BESS': self.CBESS_inicial,
+            'Dias_Simulados': resultados['dias_simulados'],
+            # Resultados
+            'BPM_Beneficio_Promedio_Mensual': round(resultados['beneficio_total'], 2),
+            'BESS_Capacidad_Final': round(resultados['capacidad_final_bess'], 2),
+            'CBESS_Capacidad_Maxima': round(resultados['capacidad_maxima_bess'], 2),
+            'RPD_Rendimiento_Promedio_Diario': round(resultados['rendimiento_promedio_diario'], 2),
+            'IPM_Ingreso_Promedio_Mensual': round(resultados['RIT'], 2),
+            'CPM_Costo_Promedio_Mensual': round(resultados['RCT'], 2),
+            'CTM_Costo_Multas_Promedio_Mensual': round(resultados['RCM'], 2),
+            'AB_Ahorro_Promedio_Mensual_BESS': round(resultados['RAB'], 2),
+            'CFF_PM_MW_Perdidos_Fallas': round(resultados['CFF_prom_mensual_MW'], 2),
+            'PPOC_Perdida_Ola_Calor': round(resultados['PPOC_prom_mensual_MW'], 2),
+            'Estado_Final_Turbina': "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada",
+            'Energia_Almacenada_Total_BESS': round(resultados['energia_sobrante_total'], 2),
+            'Ingresos_Totales': round(resultados['total_revenue'], 2),
+            'Costos_Totales': round(resultados['total_costs'], 2),
+            'Ingresos_BESS': round(resultados['total_revenue_from_bess'], 2),
+            'Multas_Totales': round(resultados['total_fines'], 2)
+        }
+        
+        # Crear DataFrame con esta fila
+        df_nueva_fila = pd.DataFrame([datos_fila])
+        
+        # Si el archivo existe, agregar la fila; si no, crear nuevo archivo
+        if os.path.exists(filepath):
+            df_nueva_fila.to_csv(filepath, mode='a', header=False, index=False, encoding='utf-8-sig')
+        else:
+            df_nueva_fila.to_csv(filepath, mode='w', header=True, index=False, encoding='utf-8-sig')
+        
+        print(f"\nResultados exportados a: {filepath}")
+        
+        return filepath
+    
     def generar_graficos(self, resultados=None, guardar=False, carpeta='plots'):
         """Generar gráficos de seguimiento de la simulación.
 

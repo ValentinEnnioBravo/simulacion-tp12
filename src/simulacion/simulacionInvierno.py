@@ -655,12 +655,14 @@ class SimulacionInvierno:
 
         df = pd.DataFrame(self.resultados) if self.resultados else pd.DataFrame()
 
+        beneficio_promedio_mensual = float(self.BENEF) / meses * 10
+
         return {
-            'beneficio_total': self.BENEF,
+            'beneficio_promedio_mensual': beneficio_promedio_mensual,
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
             'energia_sobrante_total': self.STB,
-            'rendimiento_promedio_diario': float(self.total_generacion) / max(1, dias),
+            'rendimiento_promedio_diario': beneficio_promedio_mensual / 30,
             'dias_simulados': self.T,
             'estado_final_turbina': self.H,
             'dataframe_resultados': df,
@@ -695,7 +697,7 @@ class SimulacionInvierno:
         print("=" * 50)
 
         metricas = [
-            ["BPM (Beneficio Promedio Mensual)", f"${resultados['beneficio_total']:,.2f}"],
+            ["BPM (Beneficio Promedio Mensual)", f"${resultados['beneficio_promedio_mensual']:,.2f}"],
             ["BESS (Capacidad Final del BESS)", f"{resultados['capacidad_final_bess']:.2f} MW"],
             ["CBESS (Capacidad Máxima del BESS)", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
             ["RPD (Rendimiento Promedio Diario)", f"${resultados['rendimiento_promedio_diario']:,.2f}"],

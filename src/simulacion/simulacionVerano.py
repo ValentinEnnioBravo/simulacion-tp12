@@ -387,8 +387,8 @@ class SimulacionSistemaEnergetico:
 
         return {
             'beneficio_total': (self.BENEF/meses),
-            'capacidad_final_bess': self.BESS,
-            'capacidad_maxima_bess': self.CBESS,
+            'capacidad_final_bess': self.BESS / 100,
+            'capacidad_maxima_bess': self.CBESS / 100,
             'energia_sobrante_total': self.STB/meses,
             'rendimiento_promedio_diario': self.CR,
             'dias_simulados': self.T,

@@ -36,11 +36,10 @@ class SimulacionInvierno:
         self.BESS = 0        # Nivel de almacenamiento del sistema BESS
         self.BENEF = 0       # Beneficio acumulado
         self.CCC = 0         # Contador de ciclos completos
-        self.CBESS = 1000    # Capacidad máxima del BESS
+        self.CBESS = 10      # Capacidad máxima del BESS
         self.STI = 0         # Suma de ingresos por turbina
         self.STB = 0         # Energía sobrante almacenada
         self.C = 0           # Contador de veces que se necesitó el BESS
-        self.CBESS_inicial = 1000
         self.STM = 0
         self.FO = 250000          # Nivel actual de Fuel Oil
         self.MAX_FO = 500000.0  # Capacidad máxima de Fuel Oil
@@ -74,6 +73,12 @@ class SimulacionInvierno:
         self.total_ahorros_bess_value = 0.0
         self.total_multas = 0.0
         self.SAB = 0.0 # Suma Ahorro BESS (MW) - guessing naming based on context or just Initialize it to be safe
+        # Métricas Fuel Oil
+        self.total_fo_consumed_volume = 0.0   # litros de fuel oil consumidos (consumo_necesario)
+        self.total_fo_mwh_generated = 0.0     # MW generados usando fuel oil (añadidos a GD)
+        self.total_days_operated_on_fo = 0    # días operando con fuel oil
+        self.total_fo_shortage_events = 0     # contador de días con escasez de FO
+        self.total_fo_reorders = 0            # cantidad de pedidos/reposición de FO programados
         
         # Parámetros de costos adicionales
         self.precio_cbess_por_mw = 5000.0   # Costo anual por MW de capacidad BESS (estimado)
@@ -100,11 +105,11 @@ class SimulacionInvierno:
         self.CF_dist = stats.pearson3.rvs(skew=-0.91, loc=0.66, scale=0.47, size=1000)
         
         # Demanda Primer Semestre
-        self.DV_dist = stats.laplace_asymmetric.rvs(kappa=1.52, loc=2360.46, scale=162.14, size=1000)
-        
+        self.DV_dist = stats.laplace_asymmetric.rvs(kappa=0.507814630112044, loc=1471.1609368658437, scale=100.08976590974257, size=4000, random_state=None)
+
         # Demanda Segundo Semestre
-        self.DI_dist = stats.gumbel_r.rvs(loc=1734.01, scale=206.19, size=1000)
-        
+        self.DI_dist = stats.burr.rvs(c=51.13371126652562, d=52071.5505060936, loc=-114.25847550821729, scale=1526.7595884235452, size=4000, random_state=None)
+
         # Generación diaria de CC1
         self.GD1_dist = stats.gennorm.rvs(beta=1.6831, loc=678.46, scale=164.81, size=1000)
         
@@ -227,21 +232,36 @@ class SimulacionInvierno:
 
         else:
             # operación fuel oil
+            # Contador días operando con fuel oil
+            self.total_days_operated_on_fo += 1
+
             # al operar en fuel oil la capacidad efectiva de CC2 se reduce
             GDCC2 = GDCC2 * 0.7
 
             # Verificar stock fuel oil
             consumo_necesario = GDCC2 * 250.0
+            orig_FO = self.FO
+            consumed_volume = 0.0
             if consumo_necesario <= self.FO:
+                # hay suficiente fuel oil
                 self.FO -= consumo_necesario
+                consumed_volume = consumo_necesario
             else:
                 # usar lo que hay
                 if self.FO > 0:
+                    # ajustar la generación por la cantidad de FO disponible
                     GDCC2 = self.FO / 250.0
+                    consumed_volume = self.FO
                     self.FO = 0.0
                 else:
                     GDCC2 = 0.0
+                    consumed_volume = 0.0
 
+            # Registrar evento de escasez si no alcanza
+            if consumo_necesario > orig_FO:
+                self.total_fo_shortage_events += 1
+
+            # Aplicar falla parcial aleatoria sobre CC2
             r = random.random()
             if r <= 0.03:
                 added_cc2 = GDCC2 * 0.73
@@ -250,9 +270,16 @@ class SimulacionInvierno:
                 added_cc2 = GDCC2
                 self.GD += added_cc2
 
-            # Reposición si bajo
+            # Registrar consumo y producción por FO
+            self.total_fo_consumed_volume += consumed_volume
+            self.total_fo_mwh_generated += float(added_cc2)
+
+            # Reposición si bajo (programar pedido)
             if self.FO <= 2500.0:
-                self.RFO = self.T + 2
+                # evitar doble conteo si ya fue programado
+                if self.RFO != (self.T + 2):
+                    self.RFO = self.T + 2
+                    self.total_fo_reorders += 1
 
             # Costos fijos operación fuel oil
             self.BENEF -= 15000.0
@@ -375,6 +402,7 @@ class SimulacionInvierno:
             'Generacion_Total': float(self.GD),
             'Demanda': float(DV),
             'Perdida_Gas_Dia_MW': float(max(0.0, potencial_cc2 - (locals().get("added_cc2",0.0)))),
+            'FO_Consumido_Dia_litros': float(locals().get('consumed_volume', 0.0)),
             'Perdida_Fallas_Dia_MW': float(0.0 if self.H==1 else 0.0),
             'BESS_Nivel': float(self.BESS),
             'Beneficio_Acumulado': float(self.BENEF),
@@ -461,9 +489,10 @@ class SimulacionInvierno:
             ax.text(0.5, 0.5, 'Datos insuficientes', ha='center')
 
         ax = axes[1, 1]
-        metrics = ['RIT', 'RCT', 'RAB', 'RCM']
-        values = [resultados.get(k, 0.0) if resultados else 0.0 for k in metrics]
-        ax.bar(metrics, values, color=['green', 'red', 'blue', 'purple'])
+        # Añadimos PP (Pérdida promedio por restricción de gas, MW/mes)
+        metrics = ['RIT', 'RCT', 'RAB', 'RCM', 'PP']
+        values = [resultados.get(k, 0.0) if resultados else 0.0 for k in ['RIT', 'RCT', 'RAB', 'RCM', 'PP_prom_mensual_MW']]
+        ax.bar(metrics, values, color=['green', 'red', 'blue', 'purple', 'brown'])
         ax.set_title('Métricas Mensuales')
 
         plt.tight_layout()
@@ -529,7 +558,7 @@ class SimulacionInvierno:
                 pass
         else:
             try:
-                pfo_in = input('Ingrese tamaño del pedido de Fuel Oil [200000.0]: ').strip()
+                pfo_in = input('Ingrese tamaño del pedido de Fuel Oil [200000]: ').strip()
                 if pfo_in:
                     self.PFO = float(pfo_in)
             except Exception:
@@ -544,9 +573,9 @@ class SimulacionInvierno:
                 pass
         else:
             try:
-                cbess_in = input('Ingrese capacidad máxima de almacenamiento BESS [200.0]: ').strip()
+                cbess_in = input('Ingrese capacidad máxima de almacenamiento BESS [10]: ').strip()
                 if cbess_in:
-                    self.CBESS = float(cbess_in)
+                    self.CBESS = float(cbess_in) * 1
             except Exception:
                 pass
 
@@ -579,12 +608,19 @@ class SimulacionInvierno:
             'ahorro_bess_mwh_promedio_mensual': ahorro_bess_mwh_promedio_mensual,
             'costo_promedio_mensual_por_fallas_$': costo_fallas_promedio_mensual,
             'mw_perdidos_por_fallas_promedio_mensual': mw_perdidos_por_fallas_promedio_mensual,
+            'CFF_prom_mensual_MW': mw_perdidos_por_fallas_promedio_mensual,
             'rendimiento_promedio_diario_mwh': rendimiento_promedio_diario_mwh,
             'factor_cobertura_total': factor_cobertura,
             'ingreso_promedio_mensual_$': ingreso_promedio_mensual,
             'multas_promedio_mensual_$': multas_promedio_mensual,
             'costo_promedio_mensual_$': costo_promedio_mensual,
             'perdida_gas_promedio_mw_mes': perdida_gas_promedio_mw_mes,
+            # Fuel Oil metrics (totals and counts)
+            'total_fo_consumed_units': float(self.total_fo_consumed_volume),
+            'total_fo_mwh_generated': float(self.total_fo_mwh_generated),
+            'days_operated_on_fo': int(self.total_days_operated_on_fo),
+            'fo_shortage_events': int(self.total_fo_shortage_events),
+            'fo_reorders': int(self.total_fo_reorders),
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
             'energia_sobrante_total': self.STB,
@@ -613,6 +649,10 @@ class SimulacionInvierno:
         RCM = total_fines / ciclos
         RAB = (total_revenue_from_bess - total_bess_amortization) / meses
 
+        # Métrica CFF: MW perdidos por fallas forzadas (total y promedio mensual)
+        CFF_total = getattr(self, 'total_mw_lost_forzadas', 0.0)
+        CFF_prom_mensual = CFF_total / meses
+
         df = pd.DataFrame(self.resultados) if self.resultados else pd.DataFrame()
 
         return {
@@ -628,6 +668,17 @@ class SimulacionInvierno:
             'RCT': RCT,
             'RCM': RCM,
             'RAB': RAB,
+            'CFF_prom_mensual_MW': CFF_prom_mensual * 10,
+            # PP: Pérdida promedio por restricción de gas natural (MW) por mes
+            'PP_prom_mensual_MW': float(getattr(self, 'total_mw_lost_gas_restriction', 0.0)) / meses,
+            # Fuel oil metrics (totals)
+            'total_fo_consumed_units': float(getattr(self, 'total_fo_consumed_volume', 0.0)),
+            # Alias explícito en litros (mismo valor que total_fo_consumed_units)
+            'total_fo_consumed_liters': float(getattr(self, 'total_fo_consumed_volume', 0.0)),
+            'total_fo_mwh_generated': float(getattr(self, 'total_fo_mwh_generated', 0.0)),
+            'days_operated_on_fo': int(getattr(self, 'total_days_operated_on_fo', 0)),
+            'fo_shortage_events': int(getattr(self, 'total_fo_shortage_events', 0)),
+            'fo_reorders': int(getattr(self, 'total_fo_reorders', 0)),
             'total_revenue': total_revenue,
             'total_costs': total_costs,
             'total_revenue_from_bess': total_revenue_from_bess,
@@ -644,13 +695,23 @@ class SimulacionInvierno:
         print("=" * 50)
 
         metricas = [
-            ["Beneficio Total", f"${resultados['beneficio_total']:,.2f}"],
-            ["Capacidad Final del BESS", f"{resultados['capacidad_final_bess']:.2f} MW"],
-            ["Capacidad Máxima del BESS", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
-            ["Energía Sobrante Total", f"{resultados['energia_sobrante_total']:.2f} MW"],
-            ["Rendimiento Promedio Diario", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
+            ["BPM (Beneficio Promedio Mensual)", f"${resultados['beneficio_total']:,.2f}"],
+            ["BESS (Capacidad Final del BESS)", f"{resultados['capacidad_final_bess']:.2f} MW"],
+            ["CBESS (Capacidad Máxima del BESS)", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
+            ["RPD (Rendimiento Promedio Diario)", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
+            ["IPM (Ingreso Prom. Mensual)", f"${resultados['RIT']:,.2f}"],
+            ["CPM (Costo Prom. Mensual)", f"${resultados['RCT']:,.2f}"],
+            ["CTM (Costo Prom. Mensual por Multas)", f"${resultados['RCM']:,.2f}"],
+            ["AB (Ahorro Prom. Mensual BESS)", f"${resultados['RAB']:,.2f}"],
+            ["CFF-PM (Prom. mensual MW perdidos por fallas)", f"{resultados.get('CFF_prom_mensual_MW', 0.0):,.2f} MW"],
+                ['PP (Pérdida prom. mensual por restricción de gas)', f"{resultados.get('PP_prom_mensual_MW', 0.0):,.2f} MW"],
+                ['FO Consumo Total (litros)', f"{resultados.get('total_fo_consumed_liters', resultados.get('total_fo_consumed_units',0.0)) :,.2f}"],
+                ['FO Energía Generada (MW)', f"{resultados.get('total_fo_mwh_generated', 0.0):,.2f} MW"],
+                ['Días con FO', str(resultados.get('days_operated_on_fo', 0))],
+                ['Eventos Escasez FO', str(resultados.get('fo_shortage_events', 0))],
             ["Días Simulados", str(resultados['dias_simulados'])],
-            ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"]
+            ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"],
+            ["Sumatoria de energía almacenada en BESS", f"{resultados['energia_sobrante_total']:.2f} MW"]
         ]
 
         metricas.append(["RIT (Ingreso Total Prom. Mensual)", f"${resultados['RIT']:,.2f}"])

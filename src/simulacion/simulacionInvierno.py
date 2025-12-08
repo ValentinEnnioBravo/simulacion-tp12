@@ -8,127 +8,150 @@ de ola fría característica de invierno (aumenta la demanda en días puntuales)
 Ejecutar: `python3 src/simulacion/simulacionInvierno.py`
 """
 import os
-import random
-import pandas as pd
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import random
+from scipy import stats
 import pathlib
-
+from tabulate import tabulate
 
 class SimulacionInvierno:
+    """Simulación de planta de generación - Invierno.
+
+    Estructura y nomenclatura alineada con `simulacionVerano.py`:
+    - parámetros agrupados
+    - inicialización de distribuciones en `_inicializar_distribuciones`
+    - métodos de muestreo cortos: `AD()`, `DV()`, `GDCC1()`, `GDCC2()`, `GDTV()`
+    """
+
     def __init__(self):
-        # Tiempo y eventos
-        self.T = 0
-        self.TF = 365
-        self.RP = float('inf')   # llegada de repuesto (infinito hasta pedido)
-        self.RFO = float('inf')  # llegada camión fuel oil
+        # Variables de estado
+        self.T = 0           # Contador de iteraciones (días)
+        self.TF = 10000      # Días a simular
+        self.TG = 'ESTANDAR' # Tipo de guardia: 'ESTANDAR' o 'MINIMA'
+        self.RP = 0          # Contador para el reemplazo del repuesto
+        self.H = 1           # Estado de la turbina de vapor (1 = habilitado, 0 = inhabilitado)
+        self.GD = 0          # Producción diaria total
+        self.BESS = 0        # Nivel de almacenamiento del sistema BESS
+        self.BENEF = 0       # Beneficio acumulado
+        self.CCC = 0         # Contador de ciclos completos
+        self.CBESS = 1000    # Capacidad máxima del BESS
+        self.STI = 0         # Suma de ingresos por turbina
+        self.STB = 0         # Energía sobrante almacenada
+        self.C = 0           # Contador de veces que se necesitó el BESS
+        self.CBESS_inicial = 1000
+        self.STM = 0
+        self.FO = 250000          # Nivel actual de Fuel Oil
+        self.MAX_FO = 500000.0  # Capacidad máxima de Fuel Oil
+        self.RFO = 0               # Contador para reposición de Fuel Oil
+        self.PFO = 200000.0       # Tamaño del pedido de Fuel Oil
+        
+        # Tracking totals for reporting
+        self.total_revenue = 0.0                # Ingresos brutos por venta de energía
+        self.total_revenue_from_bess = 0.0      # Ingresos obtenidos específicamente del BESS
+        self.total_personal_cost = 0.0          # Costos de personal acumulados
+        self.total_fuel_cost = 0.0              # Costos de combustible acumulados
+        self.total_bess_amortization = 0.0      # Amortización del BESS acumulada
+        self.total_fines = 0.0                  # Multas por déficit acumuladas
+        
+        # Parámetros económicos
+        self.PV = 50         # Precio de venta por megavatio generado
+        self.CC = 10         # Costo unitario del combustible
+        self.CU = 5          # Costo de uso del sistema
+        self.PM = 110         # Precio de multa por déficit energético
+        self.I = 1           # Factor de conversión
 
-        # Turbina vapor
-        self.H = 1  # 1 = habilitada, 0 = deshabilitada
+        # --- Totales acumulados para métricas y costos ---
+        self.total_costos = 0.0
+        self.total_ingresos = 0.0
+        self.total_generacion = 0.0
+        self.total_demanda = 0.0
+        self.total_mw_lost_gas_restriction = 0.0
+        self.total_mw_lost_forzadas = 0.0
+        self.total_cost_fallas_forzadas = 0.0
+        self.total_ahorros_bess_mwh = 0.0
+        self.total_ahorros_bess_value = 0.0
+        self.total_multas = 0.0
+        self.SAB = 0.0 # Suma Ahorro BESS (MW) - guessing naming based on context or just Initialize it to be safe
+        
+        # Parámetros de costos adicionales
+        self.precio_cbess_por_mw = 5000.0   # Costo anual por MW de capacidad BESS (estimado)
+        self.costo_adicional_por_mw_falla = 200.0 # Costo por MW perdido en falla forzada (estimado)
 
-        # Fuel oil
-        self.MAX_FO = 500000.0
-        self.FO = self.MAX_FO
-        self.PFO = 200000.0
-
-        # Generación y BESS
-        self.GD = 0.0
-        self.TG = 'ESTANDAR'  # Tipo de guardia: 'ESTANDAR' o 'MINIMA'
-        self.BESS = 0.0
-        self.CBESS = 200.0
-        self.CCC = 0  # contador ciclos de carga
-
-        # Economía
-        self.BENEF = 0.0
-        self.PV = 87.0   # precio venta $/MWh
-        self.CC = 30.0   # costo combustible $/MWh
-        self.CU = 5.0    # costo uso
-        self.PM = 180.0   # precio multa por MWh no satisfecho
-        self.I = 1.0
-
-        # Estadísticas
-        self.STB = 0.0
-        self.SAB = 0.0
-        self.STM = 0.0
-        self.C = 0
-        self.STI = 0.0
-
-        # Parámetros climáticos/invernales
-        # Probabilidad de ola fría que aumenta demanda
+        # --- Parámetros climáticos/invernales ---
         self.prob_ola_frio = 0.25
-        self.factor_demanda_ola_frio = 0.15  # +15% demanda
+        self.factor_demanda_ola_frio = 0.15  # +15% demanda en ola fría
+        
+        # Inicializar distribuciones tipo FDP (como en simulacionVerano)
+        self._inicializar_distribuciones()
 
-        # Cargar datos desde CSVs (si están disponibles)
-        self.base_path = os.path.join(os.path.dirname(__file__), '..', '..')
-        self.public_path = os.path.join(self.base_path, 'public')
-        self._cargar_datos()
-
-        # Resultados diarios para muestreo
+        # Resultados y series temporales
         self.resultados = []
-        # Series temporales diarias (una entrada por día)
         self.timeseries = []
-
-    def _cargar_datos(self):
-        """Carga CSVs si existen y prepara vectores de muestreo."""
-        try:
-            dem2_path = os.path.join(self.public_path, 'Demanda_Segundo_Semestre.csv')
-            self.df_dem2 = pd.read_csv(dem2_path)
-            # columna con demanda en MWh
-            if 'Demanda_MWh' in self.df_dem2.columns:
-                #! OJO ACA METI UNA NEGRADA
-                self.demanda_samples = self.df_dem2['Demanda_MWh'].values * 0.45
-            else:
-                self.demanda_samples = np.full(1000, 1650.0)
-
-        except Exception:
-            self.demanda_samples = np.full(1000, 1650.0)
-
-        try:
-            cc1_path = os.path.join(self.public_path, 'Generacion_CC1.csv')
-            self.df_cc1 = pd.read_csv(cc1_path)
-            self.cc1_samples = self.df_cc1['Generacion_MW'].values if 'Generacion_MW' in self.df_cc1.columns else np.full(1000, 700.0)
-        except Exception:
-            self.cc1_samples = np.full(1000, 700.0)
-
-        try:
-            cc2_path = os.path.join(self.public_path, 'Generacion_CC2.csv')
-            self.df_cc2 = pd.read_csv(cc2_path)
-            self.cc2_samples = self.df_cc2['Generacion_MW'].values if 'Generacion_MW' in self.df_cc2.columns else np.full(1000, 600.0)
-        except Exception:
-            self.cc2_samples = np.full(1000, 600.0)
-
-        try:
-            tv_path = os.path.join(self.public_path, 'Generacion_TV.csv')
-            self.df_tv = pd.read_csv(tv_path)
-            self.tv_samples = self.df_tv['Generacion_MW'].values if 'Generacion_MW' in self.df_tv.columns else np.full(1000, 400.0)
-        except Exception:
-            self.tv_samples = np.full(1000, 400.0)
-
-        try:
-            ad_path = os.path.join(self.public_path, 'Autodescarga_BESS.csv')
-            self.df_ad = pd.read_csv(ad_path)
-            if 'Autodescarga_Porcentaje' in self.df_ad.columns:
-                self.ad_samples = self.df_ad['Autodescarga_Porcentaje'].values
-            else:
-                self.ad_samples = np.full(1000, 0.02)
-        except Exception:
-            self.ad_samples = np.full(1000, 0.02)
-
-    # Muestreos
-    def sample_demanda(self):
-        return float(np.random.choice(self.demanda_samples))
-
-    def sample_cc1(self):
-        return float(np.random.choice(self.cc1_samples))
-
-    def sample_cc2(self):
-        return float(np.random.choice(self.cc2_samples))
-
-    def sample_tv(self):
-        return float(np.random.choice(self.tv_samples))
-
-    def sample_ad(self):
-        return float(np.random.choice(self.ad_samples))
+    
+    def _inicializar_distribuciones(self):
+        """Inicializar todas las distribuciones probabilísticas"""
+        
+        # Autodescarga
+        self.AD_dist = stats.gennorm.rvs(beta=1.6831, loc=0.00305, scale=0.00074, size=1000)
+        
+        # Costo Falla
+        self.CF_dist = stats.pearson3.rvs(skew=-0.91, loc=0.66, scale=0.47, size=1000)
+        
+        # Demanda Primer Semestre
+        self.DV_dist = stats.laplace_asymmetric.rvs(kappa=1.52, loc=2360.46, scale=162.14, size=1000)
+        
+        # Demanda Segundo Semestre
+        self.DI_dist = stats.gumbel_r.rvs(loc=1734.01, scale=206.19, size=1000)
+        
+        # Generación diaria de CC1
+        self.GD1_dist = stats.gennorm.rvs(beta=1.6831, loc=678.46, scale=164.81, size=1000)
+        
+        # Generación diaria de CC2
+        self.GD2_dist = stats.gennorm.rvs(beta=1.6831, loc=598.27, scale=145.3, size=1000)
+        
+        # Generación diaria de TV
+        self.GDTV_dist = stats.gennorm.rvs(beta=1.6831, loc=415.42, scale=100.9, size=1000)
+        
+        # Potencia Perdida
+        self.PP_dist = stats.tukeylambda.rvs(lam=-0.08, loc=0.11, scale=0.03, size=1000)
+        
+    def AD(self):
+        """Autodescarga"""
+        return np.random.choice(self.AD_dist, 1)[0]
+    
+    def CF(self):
+        """Costo Falla"""
+        return np.random.choice(self.CF_dist, 1)[0]
+    
+    def DV(self):
+        """Demanda Primer Semestre"""
+        return np.random.choice(self.DV_dist, 1)[0]
+    
+    def DI(self):
+        """Demanda Segundo Semestre"""
+        return np.random.choice(self.DI_dist, 1)[0]
+    
+    def GDCC1(self):
+        """Generación diaria de CC1"""
+        return np.random.choice(self.GD1_dist, 1)[0]
+    
+    def GDCC2(self):
+        """Generación diaria de CC2"""
+        return np.random.choice(self.GD2_dist, 1)[0]
+    
+    def GDTV(self):
+        """Generación diaria de TV"""
+        return np.random.choice(self.GDTV_dist, 1)[0]
+    
+    def PP(self):
+        """Potencia Perdida"""
+        return np.random.choice(self.PP_dist, 1)[0]
+    
+    def CABESS(self):
+        """Costo de amortización BESS"""
+        return 5000
 
     def simular_turno(self):
         """Simula un turno (día) según el diagrama adaptado para invierno."""
@@ -146,7 +169,7 @@ class SimulacionInvierno:
         gas = True if r > 0.2 else False
 
         # 3. Generación GDCC1
-        GDCC1 = self.sample_cc1()
+        GDCC1 = self.GDCC1()
         r = random.random()
         if self.TG == 'ESTANDAR':
             if r <= 0.02:
@@ -158,9 +181,9 @@ class SimulacionInvierno:
                 self.GD += GDCC1 * 0.61
             else:
                 self.GD += GDCC1
-
-        # GDCC2
-        GDCC2 = self.sample_cc2()
+        # GDCC2 (también guardamos potencial para medir pérdidas por restricción de gas)
+        GDCC2 = self.GDCC2()
+        potencial_cc2 = GDCC2
 
         # 4. Rama principal: gas o fuel oil
         if gas:
@@ -168,20 +191,24 @@ class SimulacionInvierno:
             r = random.random()
             if self.TG == 'ESTANDAR':
                 if r <= 0.03:
-                    self.GD += GDCC2 * 0.73
+                    added_cc2 = GDCC2 * 0.73
+                    self.GD += added_cc2
                 else:
-                    self.GD += GDCC2
+                    added_cc2 = GDCC2
+                    self.GD += added_cc2
             else:
                 if r <= 0.045:
-                    self.GD += GDCC2 * 0.73
+                    added_cc2 = GDCC2 * 0.73
+                    self.GD += added_cc2
                 else:
-                    self.GD += GDCC2
+                    added_cc2 = GDCC2
+                    self.GD += added_cc2
 
             # En invierno no aplicamos penalización por ola de calor
 
             # Turbina a vapor solo si H == 1
             if self.H == 1:
-                GDTV = self.sample_tv()
+                GDTV = self.GDTV()
                 r = random.random()
                 if self.TG == 'ESTANDAR':
                     if r <= 0.06:
@@ -196,9 +223,11 @@ class SimulacionInvierno:
 
             # Costos fijos operación gas
             self.BENEF -= 22000.0
+            self.total_costos += 22000.0
 
         else:
             # operación fuel oil
+            # al operar en fuel oil la capacidad efectiva de CC2 se reduce
             GDCC2 = GDCC2 * 0.7
 
             # Verificar stock fuel oil
@@ -215,9 +244,11 @@ class SimulacionInvierno:
 
             r = random.random()
             if r <= 0.03:
-                self.GD += GDCC2 * 0.73
+                added_cc2 = GDCC2 * 0.73
+                self.GD += added_cc2
             else:
-                self.GD += GDCC2
+                added_cc2 = GDCC2
+                self.GD += added_cc2
 
             # Reposición si bajo
             if self.FO <= 2500.0:
@@ -225,12 +256,19 @@ class SimulacionInvierno:
 
             # Costos fijos operación fuel oil
             self.BENEF -= 15000.0
+            self.total_costos += 15000.0
+
+            # Registrar pérdida por restricción de gas: diferencia entre potencial y lo realmente añadido
+            lost_due_gas = max(0.0, potencial_cc2 - added_cc2)
+            self.total_mw_lost_gas_restriction += lost_due_gas
 
         # 5. Costos variables de combustible
-        self.BENEF -= (self.CC * self.GD)
+        var_fuel_cost = (self.CC * self.GD)
+        self.BENEF -= var_fuel_cost
+        self.total_costos += var_fuel_cost
 
         # 6. Balance energía y BESS
-        DV = self.sample_demanda()
+        DV = self.DV()
 
         # Aplicar efecto de ola fría en invierno (aumenta la demanda)
         if random.random() < self.prob_ola_frio:
@@ -238,7 +276,9 @@ class SimulacionInvierno:
 
         if self.GD >= DV:
             # Exceso
-            self.BENEF += (self.PV * DV)
+            ingresos = (self.PV * DV)
+            self.BENEF += ingresos
+            self.total_ingresos += ingresos
             exceso = self.GD - DV
             self.BESS += exceso
 
@@ -249,26 +289,44 @@ class SimulacionInvierno:
                 self.STB += sobrante_almacenado
                 self.CCC += 1
             else:
+                # valor aproximado por almacenar/excedente (indicador)
                 self.STB += (self.PV - self.CU)
+                # no contabilizamos como ingreso inmediato
 
         else:
             # Déficit
-            self.BENEF += (self.PV * self.GD)
+            ingresos = (self.PV * self.GD)
+            self.BENEF += ingresos
+            self.total_ingresos += ingresos
             demanda_restante = DV - self.GD
-            #! self.GD = 0.0
 
             if self.BESS >= demanda_restante:
+                # BESS cubre la demanda restante
                 self.SAB += demanda_restante
                 self.BESS -= demanda_restante
-                self.BENEF += demanda_restante * self.PV
+                ingreso_bess = demanda_restante * self.PV
+                self.BENEF += ingreso_bess
+                # registrar ahorros BESS
+                self.total_ahorros_bess_mwh += demanda_restante
+                self.total_ahorros_bess_value += ingreso_bess
+                self.total_ingresos += ingreso_bess
             else:
                 # batería insuficiente
-                self.BENEF += (self.BESS * self.PV)
+                # usar lo que queda en la batería
+                ingreso_bess = (self.BESS * self.PV)
+                if self.BESS > 0:
+                    self.total_ahorros_bess_mwh += self.BESS
+                    self.total_ahorros_bess_value += ingreso_bess
+                    self.total_ingresos += ingreso_bess
+                self.BENEF += ingreso_bess
                 demanda_restante -= self.BESS
                 self.BESS = 0.0
                 # multas por déficit
-                self.BENEF -= (demanda_restante * self.PM)
-                self.STM += (demanda_restante * self.PM)
+                multa = (demanda_restante * self.PM)
+                self.BENEF -= multa
+                self.STM += multa
+                self.total_multas += multa
+                self.total_costos += multa
                 self.C += 1
 
         # 7. Mantenimiento baterías por ciclos
@@ -277,24 +335,38 @@ class SimulacionInvierno:
             self.CCC = 0
 
         # 8. Cierre del día: autodescarga y amortización
-        AD = self.sample_ad()
+        AD = self.AD()
         self.BESS = self.BESS * (1 - AD)
 
         # Amortización BESS
-        self.BENEF -= self.CABESS()
+        amort = self.CABESS()
+        self.BENEF -= amort
+        self.total_costos += amort
+        # Registrar amortización para reportes (igual que en verano)
+        try:
+            self.total_bess_amortization += amort
+        except Exception:
+            self.total_bess_amortization = amort
 
         # Registro STI (ingresos turbina)
         # aproximamos como ingreso proporcional al mínimo entre demanda y generación TV si H==1
         if self.H == 1:
             # calculamos aporte aproximado TV (si existe en el día)
             # para simplificar, aproximamos con una muestra
-            gd_tv = self.sample_tv()
+            gd_tv = self.GDTV()
             self.STI += (self.PV - self.CU) * min(DV, gd_tv) / self.I
 
         # 9. Falla catastrófica turbina vapor
         if random.random() <= 0.01 and self.H != 0:
             self.RP = self.T + 3
             self.H = 0
+            # registrar pérdida esperada por falla (contabilizada por días siguientes también)
+            # aquí contamos la pérdida inmediata estimada (si hubiese aportado TV hoy)
+            potencial_tv_loss = self.GDTV()
+            self.total_mw_lost_forzadas += potencial_tv_loss
+            self.total_cost_fallas_forzadas += potencial_tv_loss * self.costo_adicional_por_mw_falla
+            # reflejar en costos
+            self.total_costos += potencial_tv_loss * self.costo_adicional_por_mw_falla
 
         # Guardar muestreo del día
         # Registrar serie diaria completa
@@ -302,6 +374,8 @@ class SimulacionInvierno:
             'Dia': self.T,
             'Generacion_Total': float(self.GD),
             'Demanda': float(DV),
+            'Perdida_Gas_Dia_MW': float(max(0.0, potencial_cc2 - (locals().get("added_cc2",0.0)))),
+            'Perdida_Fallas_Dia_MW': float(0.0 if self.H==1 else 0.0),
             'BESS_Nivel': float(self.BESS),
             'Beneficio_Acumulado': float(self.BENEF),
             'Turbina_Habilitada': int(self.H),
@@ -319,6 +393,9 @@ class SimulacionInvierno:
                 'Turbina_Habilitada': int(self.H),
                 'FO': float(self.FO)
             })
+        # Actualizar totales para rendimiento
+        self.total_generacion += float(self.GD)
+        self.total_demanda += float(DV)
 
     def generar_graficos(self, output_dir='results', show=True):
         """Genera y guarda gráficos útiles para la toma de decisiones.
@@ -329,92 +406,82 @@ class SimulacionInvierno:
         - Nivel Fuel Oil vs día
         - Histograma del cambio diario de beneficio
         """
-        if not self.timeseries:
-            print('No hay datos para graficar.')
-            return {}
+        # Ajustar la interfaz para que coincida con `simulacionVerano.generar_graficos`
+        resultados = None
+        try:
+            resultados = self.obtener_resultados()
+        except Exception:
+            pass
 
-        out_path = pathlib.Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
+        if resultados is None:
+            # Fallback a la serie interna
+            if not self.timeseries:
+                print('No hay datos para graficar.')
+                return None
+            df = pd.DataFrame(self.timeseries).sort_values('Dia')
+        else:
+            df = resultados.get('dataframe_resultados')
+            if df is None or df.empty:
+                # fallback a timeseries si dataframe_resultados está vacío
+                if not self.timeseries:
+                    print('No hay datos muestreados para graficar.')
+                    return None
+                df = pd.DataFrame(self.timeseries).sort_values('Dia')
 
-        df = pd.DataFrame(self.timeseries)
-        df = df.sort_values('Dia')
+        # Asegurar que la columna 'Dia' sea numérica
+        df = df.copy()
+        df['Dia'] = pd.to_numeric(df['Dia'])
 
-        dias = df['Dia'].values
+        # Crear subplots 2x2 como en simulacionVerano
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
-        # Beneficio acumulado
-        plt.figure()
-        plt.plot(dias, df['Beneficio_Acumulado'].values, label='Beneficio acumulado')
-        plt.xlabel('Día')
-        plt.ylabel('Beneficio ($)')
-        plt.title('Beneficio acumulado vs Día')
-        plt.grid(True)
-        plt.legend()
-        p1 = out_path / 'beneficio_acumulado.png'
-        plt.savefig(p1)
+        ax = axes[0, 0]
+        if 'Beneficio_Acumulado' in df.columns:
+            ax.plot(df['Dia'], df['Beneficio_Acumulado'], marker='o')
+        ax.set_title('Beneficio Acumulado por Día')
+        ax.set_xlabel('Día')
+        ax.set_ylabel('Beneficio')
 
-        # BESS nivel
-        plt.figure()
-        plt.plot(dias, df['BESS_Nivel'].values, label='BESS nivel', color='orange')
-        plt.xlabel('Día')
-        plt.ylabel('Nivel BESS (MWh)')
-        plt.title('Nivel de BESS vs Día')
-        plt.grid(True)
-        plt.legend()
-        p2 = out_path / 'bess_nivel.png'
-        plt.savefig(p2)
+        ax = axes[0, 1]
+        if 'BESS_Nivel' in df.columns:
+            ax.plot(df['Dia'], df['BESS_Nivel'], marker='o', color='orange')
+        ax.set_title('Nivel BESS por Día')
+        ax.set_xlabel('Día')
+        ax.set_ylabel('BESS (MW)')
 
-        # Generación vs Demanda
-        plt.figure()
-        plt.plot(dias, df['Generacion_Total'].values, label='Generación total', color='green')
-        plt.plot(dias, df['Demanda'].values, label='Demanda', color='red', alpha=0.7)
-        plt.xlabel('Día')
-        plt.ylabel('MWh')
-        plt.title('Generación total y Demanda vs Día')
-        plt.grid(True)
-        plt.legend()
-        p3 = out_path / 'generacion_vs_demanda.png'
-        plt.savefig(p3)
+        ax = axes[1, 0]
+        if 'Generacion_Total' in df.columns and 'Demanda' in df.columns:
+            ax.plot(df['Dia'], df['Generacion_Total'], label='Generación Total', marker='o')
+            ax.plot(df['Dia'], df['Demanda'], label='Demanda', marker='x')
+            ax.set_title('Generación Total vs Demanda')
+            ax.set_xlabel('Día')
+            ax.set_ylabel('MW')
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, 'Datos insuficientes', ha='center')
 
-        # Fuel Oil nivel
-        plt.figure()
-        plt.plot(dias, df['FO'].values, label='Fuel Oil (FO)', color='brown')
-        plt.xlabel('Día')
-        plt.ylabel('FO (unidades)')
-        plt.title('Nivel de Fuel Oil vs Día')
-        plt.grid(True)
-        plt.legend()
-        p4 = out_path / 'fuel_oil_nivel.png'
-        plt.savefig(p4)
+        ax = axes[1, 1]
+        metrics = ['RIT', 'RCT', 'RAB', 'RCM']
+        values = [resultados.get(k, 0.0) if resultados else 0.0 for k in metrics]
+        ax.bar(metrics, values, color=['green', 'red', 'blue', 'purple'])
+        ax.set_title('Métricas Mensuales')
 
-        # Histograma del cambio diario de beneficio
-        beneficio = df['Beneficio_Acumulado'].values
-        cambios = np.diff(beneficio)
-        plt.figure()
-        plt.hist(cambios, bins=40, color='purple', edgecolor='k', alpha=0.7)
-        plt.xlabel('Cambio diario beneficio ($)')
-        plt.ylabel('Frecuencia')
-        plt.title('Histograma: cambio diario de beneficio')
-        p5 = out_path / 'hist_cambio_beneficio.png'
-        plt.savefig(p5)
+        plt.tight_layout()
 
-        # Mostrar todas las figuras simultáneamente si se pidió
-        if show:
+        try:
             plt.show()
-        # Cerrar todas las figuras después de mostrarlas
-        plt.close('all')
+        except Exception:
+            pass
 
-        print(f'Graficos guardados en {out_path.resolve()}')
-        return {
-            'beneficio_acumulado': str(p1),
-            'bess_nivel': str(p2),
-            'generacion_vs_demanda': str(p3),
-            'fuel_oil_nivel': str(p4),
-            'hist_cambio_beneficio': str(p5)
-        }
+        return fig
 
     def CABESS(self):
-        # costo amortización diario del BESS (valor de ejemplo)
-        return 5000.0
+        # costo amortización diario del BESS
+        # - un término base (valor ejemplo)
+        # - un componente proporcional a la capacidad `CBESS` y al precio por MW (`precio_cbess_por_mw`)
+        # `precio_cbess_por_mw` se entiende como $ por MW por año y se amortiza diariamente.
+        daily_capacity_cost = (self.CBESS * (self.precio_cbess_por_mw / 365.0))
+        return 5000.0 + daily_capacity_cost
 
     def ejecutar(self, dias=None, tipo_guardia=None, max_fo=None, pfo=None, cbess=None, pv=None, cc=None, pm=None):
         # 1. Días
@@ -422,7 +489,7 @@ class SimulacionInvierno:
             self.TF = int(dias)
         else:
             try:
-                entrada = input('Ingrese número de días a simular (por defecto 365): ').strip()
+                entrada = input('Ingrese número de días a simular [10000]: ').strip()
                 if entrada:
                     self.TF = int(entrada)
             except Exception:
@@ -446,7 +513,7 @@ class SimulacionInvierno:
             self.MAX_FO = float(max_fo)
         else:
             try:
-                mfo = input('Ingrese capacidad máxima de Fuel Oil [500000.0]: ').strip()
+                mfo = input('Ingrese capacidad máxima de Fuel Oil [500000]: ').strip()
                 if mfo:
                     self.MAX_FO = float(mfo)
             except Exception:
@@ -483,39 +550,6 @@ class SimulacionInvierno:
             except Exception:
                 pass
 
-        # 4. Precio venta
-        if pv is not None:
-            self.PV = float(pv)
-        else:
-            try:
-                pv_in = input('Ingrese precio de venta $/MWh [87.0]: ').strip()
-                if pv_in:
-                    self.PV = float(pv_in)
-            except Exception:
-                self.PV = 50.0
-
-        # 5. Costo combustible
-        if cc is not None:
-            self.CC = float(cc)
-        else:
-            try:
-                cc_in = input('Ingrese costo combustible $/MWh [30.0]: ').strip()
-                if cc_in:
-                    self.CC = float(cc_in)
-            except Exception:
-                self.CC = 10.0
-
-        # 6. Precio multa
-        if pm is not None:
-            self.PM = float(pm)
-        else:
-            try:
-                pm_in = input('Ingrese precio multa por MWh no satisfecho [180.0]: ').strip()
-                if pm_in:
-                    self.PM = float(pm_in)
-            except Exception:
-                self.PM = 80.0
-
         print(f"Iniciando simulación invierno {self.TF} días (TG={self.TG})...")
         while self.T < self.TF:
             self.simular_turno()
@@ -524,29 +558,125 @@ class SimulacionInvierno:
         return self.resumen()
 
     def resumen(self):
+        dias = max(1, self.T)
+        meses = max(1.0, dias / 30.0)
+
+        beneficio_promedio_mensual = float(self.BENEF) / meses
+        ahorro_bess_promedio_mensual = float(self.total_ahorros_bess_value) / meses
+        ahorro_bess_mwh_promedio_mensual = float(self.total_ahorros_bess_mwh) / meses
+        costo_fallas_promedio_mensual = float(self.total_cost_fallas_forzadas) / meses
+        mw_perdidos_por_fallas_promedio_mensual = float(self.total_mw_lost_forzadas) / meses
+        ingreso_promedio_mensual = float(self.total_ingresos) / meses
+        multas_promedio_mensual = float(self.total_multas) / meses
+        costo_promedio_mensual = float(self.total_costos) / meses
+        perdida_gas_promedio_mw_mes = float(self.total_mw_lost_gas_restriction) / meses
+        rendimiento_promedio_diario_mwh = float(self.total_generacion) / dias
+        factor_cobertura = (float(self.total_generacion) / max(1.0, float(self.total_demanda))) if self.total_demanda > 0 else 0.0
+
+        return {
+            'beneficio_promedio_mensual_$': beneficio_promedio_mensual,
+            'ahorro_bess_promedio_mensual_$': ahorro_bess_promedio_mensual,
+            'ahorro_bess_mwh_promedio_mensual': ahorro_bess_mwh_promedio_mensual,
+            'costo_promedio_mensual_por_fallas_$': costo_fallas_promedio_mensual,
+            'mw_perdidos_por_fallas_promedio_mensual': mw_perdidos_por_fallas_promedio_mensual,
+            'rendimiento_promedio_diario_mwh': rendimiento_promedio_diario_mwh,
+            'factor_cobertura_total': factor_cobertura,
+            'ingreso_promedio_mensual_$': ingreso_promedio_mensual,
+            'multas_promedio_mensual_$': multas_promedio_mensual,
+            'costo_promedio_mensual_$': costo_promedio_mensual,
+            'perdida_gas_promedio_mw_mes': perdida_gas_promedio_mw_mes,
+            'capacidad_final_bess': self.BESS,
+            'capacidad_maxima_bess': self.CBESS,
+            'energia_sobrante_total': self.STB,
+            'ingresos_turbina_promedio': self.STI / dias,
+            'dias_simulados': self.T,
+            'resultados_muestreados': self.resultados
+        }
+
+    def obtener_resultados(self):
+        """Construir un dict de resultados con las mismas claves que
+        `SimulacionSistemaEnergetico.obtener_resultados` (simulación verano)
+        para que el reporte final tenga el mismo formato.
+        """
+        dias = max(1, self.T)
+        meses = max(1.0, dias / 30.0)
+
+        total_revenue = self.total_ingresos
+        total_revenue_from_bess = getattr(self, 'total_ahorros_bess_value', 0.0)
+        total_bess_amortization = getattr(self, 'total_bess_amortization', 0.0)
+        total_fines = getattr(self, 'total_multas', 0.0)
+        total_costs = self.total_costos
+
+        RIT = total_revenue / meses
+        RCT = total_costs / meses
+        ciclos = max(1, self.CCC)
+        RCM = total_fines / ciclos
+        RAB = (total_revenue_from_bess - total_bess_amortization) / meses
+
+        df = pd.DataFrame(self.resultados) if self.resultados else pd.DataFrame()
+
         return {
             'beneficio_total': self.BENEF,
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
             'energia_sobrante_total': self.STB,
-            'ingresos_turbina_promedio': self.STI / max(1, self.T),
+            'rendimiento_promedio_diario': float(self.total_generacion) / max(1, dias),
             'dias_simulados': self.T,
-            'resultados_muestreados': self.resultados
+            'estado_final_turbina': self.H,
+            'dataframe_resultados': df,
+            'RIT': RIT,
+            'RCT': RCT,
+            'RCM': RCM,
+            'RAB': RAB,
+            'total_revenue': total_revenue,
+            'total_costs': total_costs,
+            'total_revenue_from_bess': total_revenue_from_bess,
+            'total_fines': total_fines
         }
+
+    def generar_reporte(self):
+        """Generar un reporte final tabulado con las mismas métricas
+        que `simulacionVerano.generar_reporte`.
+        """
+        resultados = self.obtener_resultados()
+
+        print("\n REPORTE FINAL DE LA SIMULACIÓN (INVIERNO)")
+        print("=" * 50)
+
+        metricas = [
+            ["Beneficio Total", f"${resultados['beneficio_total']:,.2f}"],
+            ["Capacidad Final del BESS", f"{resultados['capacidad_final_bess']:.2f} MW"],
+            ["Capacidad Máxima del BESS", f"{resultados['capacidad_maxima_bess']:.2f} MW"],
+            ["Energía Sobrante Total", f"{resultados['energia_sobrante_total']:.2f} MW"],
+            ["Rendimiento Promedio Diario", f"${resultados['rendimiento_promedio_diario']:,.2f}"],
+            ["Días Simulados", str(resultados['dias_simulados'])],
+            ["Estado Final Turbina", "Habilitada" if resultados['estado_final_turbina'] == 1 else "Deshabilitada"]
+        ]
+
+        metricas.append(["RIT (Ingreso Total Prom. Mensual)", f"${resultados['RIT']:,.2f}"])
+        metricas.append(["RCT (Costo Total Prom. Mensual)", f"${resultados['RCT']:,.2f}"])
+        metricas.append(["RCM (Costo Multas por Ciclo)", f"${resultados['RCM']:,.2f}"])
+        metricas.append(["RAB (Ahorro Prom. Mensual BESS)", f"${resultados['RAB']:,.2f}"])
+
+        print(tabulate(metricas, headers=["Métrica", "Valor"], tablefmt="grid"))
+
+        return resultados
 
 
 if __name__ == '__main__':
     sim = SimulacionInvierno()
     resultados = sim.ejecutar()
-    print('\n--- Resumen ---')
-    for k, v in resultados.items():
-        if k != 'resultados_muestreados':
-            print(f"{k}: {v}")
-    # imprimir primeros registros muestreados
-    if resultados['resultados_muestreados']:
-        import pprint
-        print('\nMuestreo días:')
-        #! pprint.pprint(resultados['resultados_muestreados'][:5])
-        pprint.pprint(resultados['resultados_muestreados'])
+    # Intentar generar reporte con formato igual a simulacionVerano
+    try:
+        sim.generar_reporte()
+    except Exception:
+        # fallback: imprimir el resumen simple
+        print('\n--- Resumen ---')
+        for k, v in resultados.items():
+            if k != 'resultados_muestreados':
+                print(f"{k}: {v}")
     # Generar y mostrar gráficos
-    sim.generar_graficos(show=True)
+    try:
+        sim.generar_graficos(show=True)
+    except Exception:
+        pass

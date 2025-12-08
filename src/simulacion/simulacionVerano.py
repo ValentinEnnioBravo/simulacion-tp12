@@ -50,7 +50,7 @@ class SimulacionSistemaEnergetico:
         self.PV = 50         # Precio de venta por megavatio generado
         self.CC = 10         # Costo unitario del combustible
         self.CU = 5          # Costo de uso del sistema
-        self.PM = 80         # Precio de multa por déficit energético
+        self.PM = 110         # Precio de multa por déficit energético
         self.I = 1           # Factor de conversión
         
         # Inicializar distribuciones probabilísticas
@@ -281,26 +281,6 @@ class SimulacionSistemaEnergetico:
             print("Valor inválido. Ingrese el tipo de guardia: ESTANDAR (1) o GUARDIA MINIMA (0).\n")
         # Asignar TF
         self.TG = GUARDIAS[tipo]
-
-        # Ingresar precio de venta disponible
-        while True:
-            pv = input("Ingrese el precio de venta: ").strip()
-            if pv.isnumeric():
-                pv = int(pv)
-                break
-            print("Debes ingresar un número\n")
-        # Asignar TF
-        self.PV = pv
-        
-        # Ingresar precio multa
-        while True:
-            pm = input("Ingrese el precio de la multa: ").strip()
-            if pm.isnumeric():
-                pm = int(pm)
-                break
-            print("Debes ingresar un número\n")
-        # Asignar TF
-        self.PM = pm
         
         # Ingresar capacidad del bess
         while True:

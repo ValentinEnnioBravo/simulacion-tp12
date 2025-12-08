@@ -321,7 +321,7 @@ class SimulacionSistemaEnergetico:
                 break
             print("Debes ingresar un número\n")
         # Asignar TF
-        self.CBESS = cbess
+        self.CBESS = cbess*100
         self.CBESS_inicial = cbess/2
 
         # Ejecución de la simulación

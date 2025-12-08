@@ -183,7 +183,6 @@ best_f_generacion_cc1 = f_generacion_cc1.get_best(method='sumsquare_error')
 best_f_generacion_cc2 = f_generacion_cc2.get_best(method='sumsquare_error')
 best_f_generacion_tv = f_generacion_tv.get_best(method='sumsquare_error')
 best_f_potencia_perdida = f_potencia_perdida.get_best(method='sumsquare_error')
-
 """
 Lo que devolverá algo como:
 {'nct': {'df': 23.596711533831762,
@@ -200,10 +199,10 @@ best_f_autodescarga: {'gennorm': {'beta': 39.87762517430417, 'loc': 0.0200866164
 best_f_costoFalla: {'pearson3': {'skew': 1.2672861956124433, 'loc': 7955.175469640658, 'scale': 3763.2127890221027}}
 
 --------- DEMANDA 1S ---------
-best_f_demanda_primer_semestre: {'laplace_asymmetric': {'kappa': 0.5078151312975224, 'loc': 2575.569999998423, 'scale': 452.20815824224394}}
+best_f_demanda_primer_semestre: {'laplace_asymmetric': {'kappa': 0.5078146301120441, 'loc': 1471.1609368658437, 'scale': 100.08976590974257}}
 
 --------- DEMANDA 2S ---------
-best_f_demanda_segundo_semestre: {'gumbel_r': {'loc': 3876.0965773518615, 'scale': 653.1078007257158}}
+best_f_demanda_segundo_semestre: {'gumbel_r': {'loc': 1159.8023315440605, 'scale': 129.76695207504892}}
 
 --------- GENERACION CC1 ---------
 best_f_generacion_cc1: {'gennorm': {'beta': 3.0613478036342627, 'loc': 719.3923999911451, 'scale': 127.21163991375852}}
@@ -226,8 +225,8 @@ con los parámetros que había devuelto get_best()
 
 f_autodescarga = stats.gennorm.rvs(beta=39.87762517430417, loc=0.02008661643245054, scale=0.010103831003727536, size=4000, random_state=None)
 f_costoFalla = stats.pearson3.rvs(skew=1.2672861956124433, loc=7955.175469640658, scale=3763.2127890221027, size=4000, random_state=None)
-f_demanda_primer_semestre = stats.laplace_asymmetric.rvs(kappa=0.5078151312975224, loc=2575.569999998423, scale=452.20815824224394, size=4000, random_state=None)
-f_demanda_segundo_semestre = stats.gumbel_r.rvs(loc=3876.0965773518615, scale=653.1078007257158, size=4000, random_state=None)
+f_demanda_primer_semestre = stats.laplace_asymmetric.rvs(kappa=0.507814630112044, loc=1471.1609368658437, scale=100.08976590974257, size=4000, random_state=None)
+f_demanda_segundo_semestre = stats.gumbel_r.rvs(loc=1159.8023315440605, scale=129.76695207504892, size=4000, random_state=None)
 f_generacion_cc1 = stats.gennorm.rvs(beta=3.0613478036342627, loc=719.3923999911451, scale=127.21163991375852, size=4000, random_state=None)
 f_generacion_cc2 = stats.gennorm.rvs(beta=4.9423185984406155, loc=610.589328055618, scale=124.80973709648973, size=4000, random_state=None)
 f_generacion_tv = stats.gennorm.rvs(beta=5.703506370721026, loc=550.2687715652102, scale=124.52965269900714, size=4000, random_state=None)

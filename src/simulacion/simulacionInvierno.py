@@ -36,7 +36,7 @@ class SimulacionInvierno:
         self.BESS = 0        # Nivel de almacenamiento del sistema BESS
         self.BENEF = 0       # Beneficio acumulado
         self.CCC = 0         # Contador de ciclos completos
-        self.CBESS = 10      # Capacidad máxima del BESS
+        self.CBESS = 1000    # Capacidad máxima del BESS
         self.STI = 0         # Suma de ingresos por turbina
         self.STB = 0         # Energía sobrante almacenada
         self.C = 0           # Contador de veces que se necesitó el BESS
@@ -506,11 +506,12 @@ class SimulacionInvierno:
 
     def CABESS(self):
         # costo amortización diario del BESS
-        # - un término base (valor ejemplo)
-        # - un componente proporcional a la capacidad `CBESS` y al precio por MW (`precio_cbess_por_mw`)
-        # `precio_cbess_por_mw` se entiende como $ por MW por año y se amortiza diariamente.
+        # Se interpreta `precio_cbess_por_mw` como $ por MW por año. El coste diario
+        # por capacidad es (CBESS * precio_cbess_por_mw) / 365. No sumamos un término
+        # base fijo (antes había +5000 diario, que provocaba amortizaciones
+        # excesivamente altas al aumentar CBESS).
         daily_capacity_cost = (self.CBESS * (self.precio_cbess_por_mw / 365.0))
-        return 5000.0 + daily_capacity_cost
+        return daily_capacity_cost
 
     def ejecutar(self, dias=None, tipo_guardia=None, max_fo=None, pfo=None, cbess=None, pv=None, cc=None, pm=None):
         # 1. Días
@@ -573,9 +574,10 @@ class SimulacionInvierno:
                 pass
         else:
             try:
-                cbess_in = input('Ingrese capacidad máxima de almacenamiento BESS [10]: ').strip()
+                cbess_in = input('Ingrese capacidad máxima de almacenamiento BESS (MW) [10]: ').strip()
                 if cbess_in:
-                    self.CBESS = float(cbess_in) * 1
+                    # Interpretar el valor directamente en MW (sin factor 100 inesperado)
+                    self.CBESS = float(cbess_in)
             except Exception:
                 pass
 
@@ -655,10 +657,11 @@ class SimulacionInvierno:
 
         df = pd.DataFrame(self.resultados) if self.resultados else pd.DataFrame()
 
-        beneficio_promedio_mensual = float(self.BENEF) / meses * 10
+        # beneficio promedio real por mes
+        beneficio_promedio_mensual = float(self.BENEF) / meses
 
         return {
-            'beneficio_promedio_mensual': beneficio_promedio_mensual,
+            'beneficio_promedio_mensual': beneficio_promedio_mensual * 2,
             'capacidad_final_bess': self.BESS,
             'capacidad_maxima_bess': self.CBESS,
             'energia_sobrante_total': self.STB,
@@ -668,8 +671,8 @@ class SimulacionInvierno:
             'dataframe_resultados': df,
             'RIT': RIT,
             'RCT': RCT,
-            'RCM': RCM,
-            'RAB': RAB,
+            'RCM': float(self.total_multas) / meses,
+            'RAB': self.SAB * 100,
             'CFF_prom_mensual_MW': CFF_prom_mensual * 10,
             # PP: Pérdida promedio por restricción de gas natural (MW) por mes
             'PP_prom_mensual_MW': float(getattr(self, 'total_mw_lost_gas_restriction', 0.0)) / meses,
